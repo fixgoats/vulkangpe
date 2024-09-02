@@ -1,0 +1,47 @@
+#version 450
+
+#define normsqr(x) dot(x, x)
+const float PI = 3.14159265359;
+const float hbar = 6.582e-1;
+const uint nElementsX = 2;
+const uint nElementsY = 2;
+const uint nSamples = 1024;
+const float invT = 1/(float(nSamples * 10) * 0.01);
+
+layout(std430, set = 0, binding = 2) buffer fftStore1 {
+    vec2 record1[nElementsX * nElementsY * nSamples];
+};
+
+layout(std430, set = 0, binding = 3) buffer fftStore2 {
+    vec2 record2[nElementsX * nElementsY * nSamples];
+};
+
+layout(std430, set = 0, binding = 4) buffer energyDiffs {
+    float eDiffs[nElementsX * nElementsY];
+};
+
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    uint j = gl_GlobalInvocationID.y;
+
+    uint start = (j * nElementsX + i) * nSamples;
+    float currMax1 = normsqr(record1[start]);
+    float currMax2 = normsqr(record2[start]);
+    int I1 = int(start);
+    int I2 = int(start);
+    for (uint k = start; k < start + nSamples; k++) {
+        if (normsqr(record1[k]) > currMax1) {
+            I1 = int(k);
+            currMax1 = normsqr(record1[k]);
+        }
+        if (normsqr(record2[k]) > currMax2) {
+            I2 = int(k);
+            currMax2 = normsqr(record2[k]);
+        }
+    }
+    if (I1 > nSamples / 2 + start) { I1 = I1 - int(nSamples); }
+    if (I2 > nSamples / 2 + start) { I2 = I2 - int(nSamples); }
+    eDiffs[j * nElementsX + i] = float(I1 - I2);// * hbar * PI * invT;
+}

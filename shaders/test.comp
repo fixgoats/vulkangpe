@@ -1,0 +1,98 @@
+#version 450
+
+#define c_mul(a, b) vec2((a.x*b.x)-(a.y*b.y), (a.x*b.y)+(a.y*b.x))
+#define rc_mul(r, z) vec2((r*z.x), (r*z.y))
+#define cr_mul(z, r) vec2((r*z.x), (r*z.y))
+#define rc_dib(z, r) vec2((z.x / r), (z.y / r))
+#define c_div(a, b) vec2((((a.x*b.x)+(a.y*b.y))/(dot(b,b))),(((a.y*b.x)-(a.x*b.y))/(dot(b,b))))
+#define c_modulus(a) length(a)
+#define c_conj(a) vec2(a.x, -a.y)
+#define c_arg(a) atan(a.y, a.x)
+#define c_sin(a) vec2((sin(a.x) * cosh(a.y)), (cos(a.x) * sinh(a.y)))
+#define c_cos(a) vec2((cos(a.x) * cosh(a.y)), -(sin(a.x) * sinh(a.y)))
+#define r_cos(a) vec2(cos(a.x), 0)
+#define c_exp(a) exp(a.x) * vec2(cos(a.y), sin(a.y))
+#define cis(x) vec2(cos(x), sin(x))
+#define normsqr(x) dot(x, x)
+const float PI = 3.14159265359;
+const uint nElementsX = 2;
+const uint nElementsY = 2;
+const float R = 0.012;
+const float gamma = 0.2;
+const float hR = R / 2;
+const float hgamma = gamma / 2;
+const float hbar = 6.582e-1;
+const float invhbar = 1 / hbar;
+const float Gamma = 0.05;
+const float W = Gamma / 2;
+const float EXY = 0.0006;
+
+struct Params {
+    float Ep;
+    float Em;
+    float Gp;
+    float Gm;
+    float alphap;
+    float alpham;
+    float Gammasp;
+    float Gammasm;
+    float Pp;
+    float Pm;
+    float PpdW;
+    float PmdW;
+};
+
+layout(set = 0, binding = 0) uniform readonly coefficients {
+    Params c[nElementsY];
+};
+
+layout(std430, set = 0, binding = 1) buffer system {
+    mat3x2 data[nElementsX * nElementsY];
+};
+
+layout(std430, set = 0, binding = 2) buffer fftStore1 {
+    vec2 record1[nElementsX * nElementsY * nSamples];
+};
+
+layout(std430, set = 0, binding = 3) buffer fftStore2 {
+    vec2 record2[nElementsX * nElementsY * nSamples];
+};
+
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+mat3x2 f(mat3x2 y, Params p, float r) {
+    mat3x2 x;
+    x[0] = c_mul(vec2(hR * y[2].x - hgamma, -invhbar * (p.Ep + p.alphap * dot(y[0], y[0]) + p.Gp * (y[2].x + r * p.PpdW))), y[0]) + EXY * y[1];
+    x[1] = c_mul(vec2(hR * y[2].y - hgamma, -invhbar * (p.Em + p.alpham * dot(y[1], y[1]) + p.Gm * (y[2].y + r * p.PmdW))), y[1]) + EXY * y[0];
+    x[2].x = -((Gamma + p.Gammasp + R * dot(y[0], y[0])) * y[2].x) + (p.Gammasm * y[2].y) + r * p.Pp;
+    x[2].y = -((Gamma + p.Gammasm + R * dot(y[1], y[1])) * y[2].y) + (p.Gammasp * y[2].x) + r * p.Pm;
+    return x;
+}
+
+mat3x2 RK4step(mat3x2 y, Params p, float r) {
+    mat3x2 k1 = f(y, p, r);
+    mat3x2 k2 = f(y + (0.5 * dt) * k1, p, r);
+    mat3x2 k3 = f(y + (0.5 * dt) * k2, p, r);
+    mat3x2 k4 = f(y + dt * k3, p, r);
+    return y + dt * (1. / 6.) * (k1 + (2 * k2) + (2 * k3) + k4);
+}
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    uint j = gl_GlobalInvocationID.y;
+
+    mat3x2 tmp = data[j * nElementsX + i];
+    const float q = 0.5 / float(nSamples);
+    for (int k = 0; k < 2000; k++) {
+         tmp = RK4step(tmp, c[j], 1.0 + float(i) * q);
+    }
+
+    for (int k = 0; k < nSamples; k++) {
+        for (int l = 0; l < 600; l++) {
+            tmp = RK4step(tmp, c[j], 1.0 + float(i) * q);
+        }
+        record1[(j * nElementsX + i) * nSamples + k] = tmp[0];
+        record2[(j * nElementsX + i) * nSamples + k] = tmp[1];
+        data[j*nElementsX + i] = tmp;
+    }
+}
