@@ -1,8 +1,11 @@
+#include "vkhelpers.hpp"
 #include "hack.hpp"
 #include <fstream>
 #include <iostream>
+#include <vulkan/vulkan_enums.hpp>
+#include <vulkan/vulkan_raii.hpp>
 
-static std::vector<uint32_t> readFile(const std::string& filename) {
+std::vector<uint32_t> readFile(const std::string& filename) {
   std::ifstream file(filename, std::ios::ate | std::ios::binary);
 
   if (!file.is_open()) {
@@ -16,6 +19,47 @@ static std::vector<uint32_t> readFile(const std::string& filename) {
   file.close();
   return buffer;
 }
+
+RaiiVmaAllocator::RaiiVmaAllocator(vk::raii::PhysicalDevice& physicalDevice,
+                                   vk::raii::Device& device,
+                                   vk::raii::Instance& instance) {
+  VmaAllocatorCreateInfo allocatorInfo{};
+  allocatorInfo.physicalDevice = *physicalDevice;
+  allocatorInfo.vulkanApiVersion = physicalDevice.getProperties().apiVersion;
+  allocatorInfo.device = *device;
+  allocatorInfo.instance = *instance;
+  vmaCreateAllocator(&allocatorInfo, &allocator);
+}
+
+RaiiVmaAllocator::~RaiiVmaAllocator() {
+  std::cout << "Destroying allocator\n";
+  vmaDestroyAllocator(allocator);
+}
+
+RaiiVmaBuffer::RaiiVmaBuffer(VmaAllocator& Allocator,
+                             VmaAllocationCreateInfo& allocCreateInfo,
+                             vk::BufferCreateInfo& BCI) {
+  allocator = &Allocator;
+  VkBuffer bufferRaw;
+  vmaCreateBuffer(*allocator, reinterpret_cast<VkBufferCreateInfo*>(&BCI),
+                  &allocCreateInfo, &bufferRaw, &allocation, &allocationInfo);
+  buffer = bufferRaw;
+}
+RaiiVmaBuffer::~RaiiVmaBuffer() {
+  std::cout << "Destroying buffer\n";
+  vmaDestroyBuffer(*allocator, buffer, allocation);
+}
+
+void recordComputePipeline(vk::raii::CommandBuffer& commandBuffer,
+                           ComputeInfo ci) {
+  commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
+                                vk::PipelineStageFlagBits::eAllCommands, {},
+                                fullMemoryBarrier, nullptr, nullptr);
+  commandBuffer.bindPipeline(vk::PipelineBindPoint::eCompute, *ci.pipeline);
+  commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *ci.layout,
+                                   0, {*ci.descriptorSet}, {});
+  commandBuffer.dispatch(ci.X, ci.Y, ci.Z);
+};
 
 vk::raii::Instance makeInstance(const vk::raii::Context& context) {
   vk::ApplicationInfo appInfo{
@@ -35,7 +79,7 @@ vk::raii::Instance makeInstance(const vk::raii::Context& context) {
 }
 
 vk::raii::PhysicalDevice pickPhysicalDevice(const vk::raii::Instance& instance,
-                                            const int32_t desiredGPU = -1) {
+                                            const int32_t desiredGPU) {
   // check if there are GPUs that support Vulkan and "intelligently" select
   // one. Prioritises discrete GPUs, and after that VRAM size.
   vk::raii::PhysicalDevices physicalDevices(instance);
@@ -70,7 +114,7 @@ vk::raii::PhysicalDevice pickPhysicalDevice(const vk::raii::Instance& instance,
     }
   }
 
-  // only consider discrete gpus if available
+  // only consider discrete gpus if available´:
   if (discrete.size() > 0) {
     if (discrete.size() == 1) {
       return vk::raii::PhysicalDevice(std::move(physicalDevices[discrete[0]]));

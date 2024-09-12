@@ -1,5 +1,4 @@
 #include <numeric>
-#include <opencv2/core/types.hpp>
 #define VMA_IMPLEMENTATION
 #include "hack.hpp"
 #include "vk_mem_alloc.h"
@@ -9,7 +8,6 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
-#include <opencv2/opencv.hpp>
 #include <random>
 
 #include "vkFFT.h"
@@ -114,8 +112,7 @@ int main(int argc, char* argv[]) {
   allocatorInfo.device = *device;
   allocatorInfo.instance = *instance;
 
-  VmaAllocator allocator;
-  vmaCreateAllocator(&allocatorInfo, &allocator);
+  RaiiVmaAllocator allocator(physicalDevice, device, instance);
 
   vk::BufferCreateInfo stagingBCI({}, stateBufferSize,
                                   vk::BufferUsageFlagBits::eTransferSrc |
@@ -126,11 +123,7 @@ int main(int argc, char* argv[]) {
   allocCreateInfo.flags =
       VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
       VMA_ALLOCATION_CREATE_MAPPED_BIT;
-  VkBuffer stagingBuffer;
-  VmaAllocation stagingAlloc;
-  VmaAllocationInfo stAI;
-  vmaCreateBuffer(allocator, reinterpret_cast<VkBufferCreateInfo*>(&stagingBCI),
-                  &allocCreateInfo, &stagingBuffer, &stagingAlloc, &stAI);
+  RaiiVmaBuffer staging(allocator.allocator, allocCreateInfo, stagingBCI);
 
   vk::BufferCreateInfo stateBCI{vk::BufferCreateFlags(),
                                 stateBufferSize,
@@ -140,28 +133,31 @@ int main(int argc, char* argv[]) {
                                 vk::SharingMode::eExclusive,
                                 1,
                                 &computeQueueFamilyIndex};
+  vk::BufferCreateInfo floatBCI{vk::BufferCreateFlags(),
+                                reservoirBufferSize,
+                                vk::BufferUsageFlagBits::eStorageBuffer |
+                                    vk::BufferUsageFlagBits::eTransferDst |
+                                    vk::BufferUsageFlagBits::eTransferSrc,
+                                vk::SharingMode::eExclusive,
+                                1,
+                                &computeQueueFamilyIndex};
   allocCreateInfo.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
   allocCreateInfo.priority = 1.0f;
-  VkBuffer rspaceBufferRaw;
-  VmaAllocation rspaceAlloc;
-  VmaAllocationInfo rspaceAI;
-  vmaCreateBuffer(allocator, reinterpret_cast<VkBufferCreateInfo*>(&stateBCI),
-                  &allocCreateInfo, &rspaceBufferRaw, &rspaceAlloc, &rspaceAI);
-  vk::Buffer rspaceBuffer = rspaceBufferRaw;
-  VkBuffer kspaceBufferRaw;
-  VmaAllocation kspaceAlloc;
-  VmaAllocationInfo kspaceAI;
-  vmaCreateBuffer(allocator, reinterpret_cast<VkBufferCreateInfo*>(&stateBCI),
-                  &allocCreateInfo, &kspaceBufferRaw, &kspaceAlloc, &kspaceAI);
-  vk::Buffer kspaceBuffer = kspaceBufferRaw;
-  VkBuffer reservoirBufferRaw;
-  VmaAllocation reservoirAlloc;
-  VmaAllocationInfo reservoirAI;
-  vmaCreateBuffer(allocator, reinterpret_cast<VkBufferCreateInfo*>(&stateBCI),
-                  &allocCreateInfo, &reservoirBufferRaw, &reservoirAlloc,
-                  &reservoirAI);
-  vk::Buffer reservoirBuffer = reservoirBufferRaw;
-  c32* sStagingPtr = static_cast<c32*>(stAI.pMappedData);
+  RaiiVmaBuffer psir(allocator.allocator, allocCreateInfo, stateBCI);
+  RaiiVmaBuffer psik(allocator.allocator, allocCreateInfo, stateBCI);
+  RaiiVmaBuffer nR(allocator.allocator, allocCreateInfo, floatBCI);
+  RaiiVmaBuffer kTimeEvo(allocator.allocator, allocCreateInfo, stateBCI);
+  RaiiVmaBuffer pump(allocator.allocator, allocCreateInfo, floatBCI);
+  c32* sStagingPtr = static_cast<c32*>(staging.allocationInfo.pMappedData);
+  float* fStagingPtr = static_cast<float*>(staging.allocationInfo.pMappedData);
+  for (uint32_t i = 0; i < nElementsY * nElementsX; i++) {
+    fStagingPtr[i] = 0.;
+  }
+  oneTimeSubmit(
+      device, commandPool, queue, [&](vk::CommandBuffer const& commandBuffer) {
+        commandBuffer.copyBuffer(staging.buffer, psir.buffer,
+                                 vk::BufferCopy(0, 0, stateBufferSize));
+      });
 
   std::random_device rd;
   std::mt19937 gen(rd());
@@ -171,28 +167,12 @@ int main(int argc, char* argv[]) {
       sStagingPtr[j * nElementsX + i] = c32{dis(gen), dis(gen)};
     }
   }
-  cv::Mat bleh(nElementsX, nElementsY, CV_32FC2, (void*)sStagingPtr);
-  cv::blur(bleh, bleh, cv::Size(10, 10));
   oneTimeSubmit(
       device, commandPool, queue, [&](vk::CommandBuffer const& commandBuffer) {
-        commandBuffer.copyBuffer(stagingBuffer, rspaceBuffer,
+        commandBuffer.copyBuffer(staging.buffer, psir.buffer,
                                  vk::BufferCopy(0, 0, stateBufferSize));
       });
 
-  /*auto rstepSpirv = readFile("rstep.spv");
-  vk::ShaderModuleCreateInfo rstepMCI(vk::ShaderModuleCreateFlags(),
-                                      rstepSpirv);
-  vk::raii::ShaderModule rstepModule(device, rstepMCI);
-
-  auto kstepSpirv = readFile("kstep.spv");
-  vk::ShaderModuleCreateInfo kstepMCI(vk::ShaderModuleCreateFlags(),
-                                      kstepSpirv);
-  vk::raii::ShaderModule kstepModule(device, kstepMCI);
-
-  auto nstepSpirv = readFile("nstep.spv");
-  vk::ShaderModuleCreateInfo nstepMCI(vk::ShaderModuleCreateFlags(),
-                                      nstepSpirv);
-  vk::raii::ShaderModule nstepModule(device, nstepMCI);*/
   auto shaderCode = readFile("step.spv");
   vk::ShaderModuleCreateInfo shaderMCI(vk::ShaderModuleCreateFlags(),
                                        shaderCode);
@@ -205,7 +185,7 @@ int main(int argc, char* argv[]) {
        vk::ShaderStageFlagBits::eCompute},
       {2, vk::DescriptorType::eStorageBuffer, 1,
        vk::ShaderStageFlagBits::eCompute},
-      {2, vk::DescriptorType::eStorageBuffer, 1,
+      {3, vk::DescriptorType::eStorageBuffer, 1,
        vk::ShaderStageFlagBits::eCompute}};
 
   vk::DescriptorSetLayoutCreateInfo dSLCI(vk::DescriptorSetLayoutCreateFlags(),
