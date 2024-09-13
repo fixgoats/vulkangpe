@@ -10,6 +10,7 @@
 
 #include "vkFFT.h"
 #include <complex>
+#include <vulkan/vulkan_enums.hpp>
 
 #include "vkhelpers.hpp"
 
@@ -144,8 +145,12 @@ int main(int argc, char* argv[]) {
   RaiiVmaBuffer psir(allocator.allocator, allocCreateInfo, stateBCI);
   RaiiVmaBuffer psik(allocator.allocator, allocCreateInfo, stateBCI);
   RaiiVmaBuffer nR(allocator.allocator, allocCreateInfo, floatBCI);
-  RaiiVmaBuffer kTimeEvo(allocator.allocator, allocCreateInfo, stateBCI);
   RaiiVmaBuffer pump(allocator.allocator, allocCreateInfo, floatBCI);
+  RaiiVmaBuffer oldpsir(allocator.allocator, allocCreateInfo, stateBCI);
+  RaiiVmaBuffer kTimeEvo(allocator.allocator, allocCreateInfo, stateBCI);
+  std::vector<RaiiVmaBuffer*> buffers{&psir, &psik,    &nR,
+                                      &pump, &oldpsir, &kTimeEvo};
+
   c32* sStagingPtr = static_cast<c32*>(staging.allocationInfo.pMappedData);
   float* fStagingPtr = static_cast<float*>(staging.allocationInfo.pMappedData);
   for (uint32_t i = 0; i < nElementsY * nElementsX; i++) {
@@ -153,8 +158,8 @@ int main(int argc, char* argv[]) {
   }
   oneTimeSubmit(
       device, commandPool, queue, [&](vk::CommandBuffer const& commandBuffer) {
-        commandBuffer.copyBuffer(staging.buffer, psir.buffer,
-                                 vk::BufferCopy(0, 0, stateBufferSize));
+        commandBuffer.copyBuffer(staging.buffer, nR.buffer,
+                                 vk::BufferCopy(0, 0, reservoirBufferSize));
       });
 
   std::random_device rd;
@@ -165,82 +170,23 @@ int main(int argc, char* argv[]) {
       sStagingPtr[j * nElementsX + i] = c32{dis(gen), dis(gen)};
     }
   }
+
   oneTimeSubmit(
       device, commandPool, queue, [&](vk::CommandBuffer const& commandBuffer) {
         commandBuffer.copyBuffer(staging.buffer, psir.buffer,
                                  vk::BufferCopy(0, 0, stateBufferSize));
       });
 
-  auto shaderCode = readFile("step.spv");
-  vk::ShaderModuleCreateInfo shaderMCI(vk::ShaderModuleCreateFlags(),
-                                       shaderCode);
-  vk::raii::ShaderModule shaderModule(device, shaderMCI);
-
-  const std::vector<vk::DescriptorSetLayoutBinding> dSLBs = {
-      {0, vk::DescriptorType::eUniformBuffer, 1,
-       vk::ShaderStageFlagBits::eCompute},
-      {1, vk::DescriptorType::eStorageBuffer, 1,
-       vk::ShaderStageFlagBits::eCompute},
-      {2, vk::DescriptorType::eStorageBuffer, 1,
-       vk::ShaderStageFlagBits::eCompute},
-      {3, vk::DescriptorType::eStorageBuffer, 1,
-       vk::ShaderStageFlagBits::eCompute}};
-
-  vk::DescriptorSetLayoutCreateInfo dSLCI(vk::DescriptorSetLayoutCreateFlags(),
-                                          dSLBs);
-  vk::raii::DescriptorSetLayout descriptorSetLayout(device, dSLCI);
-
-  vk::PipelineLayoutCreateInfo pLCI(vk::PipelineLayoutCreateFlags(),
-                                    *descriptorSetLayout);
-  vk::raii::PipelineLayout pipelineLayout(device, pLCI);
-  vk::raii::PipelineCache pipelineCache(device, vk::PipelineCacheCreateInfo());
-  vk::PipelineShaderStageCreateInfo rstepSCI(
-      vk::PipelineShaderStageCreateFlags(), vk::ShaderStageFlagBits::eCompute,
-      *shaderModule, "rstep");
-  vk::PipelineShaderStageCreateInfo kstepSCI(
-      vk::PipelineShaderStageCreateFlags(), vk::ShaderStageFlagBits::eCompute,
-      *shaderModule, "kstep");
-  vk::PipelineShaderStageCreateInfo nstepSCI(
-      vk::PipelineShaderStageCreateFlags(), vk::ShaderStageFlagBits::eCompute,
-      *shaderModule, "nstep");
-  vk::ComputePipelineCreateInfo rstepPCI(vk::PipelineCreateFlags(), rstepSCI,
-                                         *pipelineLayout);
-  vk::ComputePipelineCreateInfo kstepPCI(vk::PipelineCreateFlags(), kstepSCI,
-                                         *pipelineLayout);
-  vk::ComputePipelineCreateInfo nstepPCI(vk::PipelineCreateFlags(), nstepSCI,
-                                         *pipelineLayout);
-  vk::raii::Pipeline rstepPipeline(device, pipelineCache, rstepPCI);
-  vk::raii::Pipeline kstepPipeline(device, pipelineCache, kstepPCI);
-  vk::raii::Pipeline nstepPipeline(device, pipelineCache, nstepPCI);
-
-  vk::DescriptorPoolSize descriptorPoolSize(vk::DescriptorType::eStorageBuffer,
-                                            1);
-  vk::DescriptorPoolCreateInfo dPCI(
-      vk::DescriptorPoolCreateFlags(
-          vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet),
-      1, descriptorPoolSize);
-  vk::raii::DescriptorPool descriptorPool(device, dPCI);
-  psir.allocation->GetType()
-
-      vk::DescriptorSetAllocateInfo dSAI(*descriptorPool, 1,
-                                         &*descriptorSetLayout);
-  vk::raii::DescriptorSets pDescriptorSets(device, dSAI);
-  vk::raii::DescriptorSet descriptorSet(std::move(pDescriptorSets[0]));
-  vk::DescriptorBufferInfo rspaceBufferInfo(rspaceBuffer, 0, stateBufferSize);
-  vk::DescriptorBufferInfo kspaceBufferInfo(kspaceBuffer, 0, stateBufferSize);
-  vk::DescriptorBufferInfo reservoirBufferInfo(reservoirBuffer, 0,
-                                               reservoirBufferSize);
-
-  const std::vector<vk::WriteDescriptorSet> writeDescriptorSets = {
-      {*descriptorSet, 0, 0, 1, vk::DescriptorType::eUniformBuffer, nullptr,
-       &rspaceBufferInfo},
-      {*descriptorSet, 1, 0, 1, vk::DescriptorType::eStorageBuffer, nullptr,
-       &rspaceBufferInfo},
-      {*descriptorSet, 2, 0, 1, vk::DescriptorType::eStorageBuffer, nullptr,
-       &kspaceBufferInfo},
-      {*descriptorSet, 3, 0, 1, vk::DescriptorType::eStorageBuffer, nullptr,
-       &reservoirBufferInfo}};
-  device.updateDescriptorSets(writeDescriptorSets, {});
+  std::vector<std::string> binNames{"rstep.spv", "kstep.spv", "finalstep.spv"};
+  ComputeInfo computeInfo =
+      setupPipelines(device, binNames,
+                     std::vector({vk::DescriptorType::eStorageBuffer,
+                                  vk::DescriptorType::eStorageBuffer,
+                                  vk::DescriptorType::eStorageBuffer,
+                                  vk::DescriptorType::eStorageBuffer,
+                                  vk::DescriptorType::eStorageBuffer,
+                                  vk::DescriptorType::eStorageBuffer}),
+                     buffers);
 
   VkFFTConfiguration conf{};
   VkFFTApplication rToK{};
@@ -253,62 +199,26 @@ int main(int argc, char* argv[]) {
   conf.fence = (VkFence*)&*fence;
   conf.commandPool = (VkCommandPool*)&*commandPool;
   conf.physicalDevice = (VkPhysicalDevice*)&*physicalDevice;
+  conf.isInputFormatted = true;
   conf.bufferNum = 1;
-  conf.inputBuffer = reinterpret_cast<VkBuffer*>(&rspaceBuffer);
-  conf.outputBuffer = reinterpret_cast<VkBuffer*>(&kspaceBuffer);
+  conf.inputBuffer = (VkBuffer*)&psir.buffer;
+  conf.buffer = (VkBuffer*)&psik.buffer;
   conf.bufferSize = &stateBufferSize;
+  conf.inputBufferSize = &stateBufferSize;
+  conf.inverseReturnToInputBuffer = true;
 
   auto resFFT = initializeVkFFT(&rToK, conf);
-  VkFFTApplication kToR{};
-  conf.device = (VkDevice*)&*device;
-  conf.FFTdim = 2;
-  conf.size[0] = nElementsX;
-  conf.size[1] = nElementsY;
-  conf.numberBatches = 1;
-  conf.queue = (VkQueue*)&*queue;
-  conf.fence = (VkFence*)&*fence;
-  conf.commandPool = (VkCommandPool*)&*commandPool;
-  conf.physicalDevice = (VkPhysicalDevice*)&*physicalDevice;
-  conf.bufferNum = 1;
-  conf.inputBuffer = reinterpret_cast<VkBuffer*>(&kspaceBuffer);
-  conf.outputBuffer = reinterpret_cast<VkBuffer*>(&rspaceBuffer);
-  conf.bufferSize = &stateBufferSize;
-
-  resFFT = initializeVkFFT(&kToR, conf);
   VkFFTLaunchParams launchParams{};
 
   vk::CommandBufferBeginInfo cBBI(
       vk::CommandBufferUsageFlagBits::eOneTimeSubmit);
   commandBuffer.begin(cBBI);
   launchParams.commandBuffer = (VkCommandBuffer*)&*commandBuffer;
-  commandBuffer.bindPipeline(vk::PipelineBindPoint::eCompute, *rstepPipeline);
-  commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eCompute,
-                                   *pipelineLayout, 0, {*descriptorSet}, {});
-  commandBuffer.dispatch(nElementsX, nElementsY, 1);
-  vk::MemoryBarrier memoryBarrier(
-      vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eMemoryWrite,
-      vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite);
-  commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
-                                vk::PipelineStageFlagBits::eAllCommands, {},
-                                memoryBarrier, nullptr, nullptr);
+  appendPipeline(commandBuffer, computeInfo, 0);
   resFFT = VkFFTAppend(&rToK, -1, &launchParams);
-  commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
-                                vk::PipelineStageFlagBits::eAllCommands, {},
-                                memoryBarrier, nullptr, nullptr);
-  commandBuffer.bindPipeline(vk::PipelineBindPoint::eCompute, *kstepPipeline);
-  commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eCompute,
-                                   *pipelineLayout, 0, {*descriptorSet}, {});
-  commandBuffer.dispatch(nElementsX, nElementsY, 1);
-  commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
-                                vk::PipelineStageFlagBits::eAllCommands, {},
-                                memoryBarrier, nullptr, nullptr);
-  resFFT = VkFFTAppend(&kToR, 1, &launchParams);
-  commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
-                                vk::PipelineStageFlagBits::eAllCommands, {},
-                                memoryBarrier, nullptr, nullptr);
-  commandBuffer.bindPipeline(vk::PipelineBindPoint::eCompute, *nstepPipeline);
-  commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eCompute,
-                                   *pipelineLayout, 0, {*descriptorSet}, {});
+  appendPipeline(commandBuffer, computeInfo, 1);
+  resFFT = VkFFTAppend(&rToK, 1, &launchParams);
+  appendPipeline(commandBuffer, computeInfo, 2);
   commandBuffer.end();
 
   vk::SubmitInfo submitInfo(0, nullptr, nullptr, 1, &*commandBuffer);
@@ -319,10 +229,10 @@ int main(int argc, char* argv[]) {
 
   oneTimeSubmit(
       device, commandPool, queue, [&](vk::CommandBuffer const& commandBuffer) {
-        commandBuffer.copyBuffer(rspaceBuffer, stagingBuffer,
+        commandBuffer.copyBuffer(psir.buffer, staging.buffer,
                                  vk::BufferCopy(0, 0, stateBufferSize));
       });
-  float* ePtr = reinterpret_cast<float*>(stAI.pMappedData);
+  float* ePtr = reinterpret_cast<float*>(staging.allocationInfo.pMappedData);
   for (uint32_t j = 0; j < nElementsY; j++) {
     for (uint32_t i = 0; i < nElementsX; i++) {
       std::cout << ePtr[j * nElementsX + i] << ' ';
@@ -331,12 +241,6 @@ int main(int argc, char* argv[]) {
   }
 
   deleteVkFFT(&rToK);
-  deleteVkFFT(&kToR);
-  vmaDestroyBuffer(allocator, stagingBuffer, stagingAlloc);
-  vmaDestroyBuffer(allocator, rspaceBuffer, rspaceAlloc);
-  vmaDestroyBuffer(allocator, kspaceBuffer, kspaceAlloc);
-  vmaDestroyBuffer(allocator, reservoirBuffer, reservoirAlloc);
-  vmaDestroyAllocator(allocator);
 
   return 0;
 }

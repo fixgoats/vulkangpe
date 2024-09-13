@@ -1,5 +1,6 @@
+#define VMA_IMPLEMENTATION
 #include "vkhelpers.hpp"
-#include "hack.hpp"
+#include "vk_mem_alloc.h"
 #include <cstdint>
 #include <fstream>
 #include <iostream>
@@ -33,14 +34,12 @@ RaiiVmaAllocator::RaiiVmaAllocator(vk::raii::PhysicalDevice& physicalDevice,
   vmaCreateAllocator(&allocatorInfo, &allocator);
 }
 
-RaiiVmaAllocator::~RaiiVmaAllocator() {
-  std::cout << "Destroying allocator\n";
-  vmaDestroyAllocator(allocator);
-}
+RaiiVmaAllocator::~RaiiVmaAllocator() { vmaDestroyAllocator(allocator); }
 
-void setupPipelines(vk::raii::Device& device,
-                    const std::vector<std::string>& binNames,
-                    std::vector<vk::DescriptorType> buffers) {
+ComputeInfo setupPipelines(vk::raii::Device& device,
+                           const std::vector<std::string>& binNames,
+                           std::vector<vk::DescriptorType> bufferTypes,
+                           std::vector<RaiiVmaBuffer*> buffers) {
   std::vector<vk::raii::ShaderModule> modules;
   for (const auto& name : binNames) {
     auto shaderCode = readFile(name);
@@ -50,8 +49,8 @@ void setupPipelines(vk::raii::Device& device,
   }
 
   std::vector<vk::DescriptorSetLayoutBinding> dSLBs;
-  for (uint32_t i = 0; i < buffers.size(); i++) {
-    dSLBs.emplace_back(i, buffers[i], 1, vk::ShaderStageFlagBits::eCompute);
+  for (uint32_t i = 0; i < bufferTypes.size(); i++) {
+    dSLBs.emplace_back(i, bufferTypes[i], 1, vk::ShaderStageFlagBits::eCompute);
   }
 
   vk::DescriptorSetLayoutCreateInfo dSLCI(vk::DescriptorSetLayoutCreateFlags(),
@@ -81,6 +80,34 @@ void setupPipelines(vk::raii::Device& device,
   vk::raii::DescriptorSets pDescriptorSets(device, dSAI);
   vk::raii::DescriptorSet descriptorSet(std::move(pDescriptorSets[0]));
   std::vector<vk::DescriptorBufferInfo> dBIs;
+  for (const auto& b : buffers) {
+    dBIs.emplace_back((*b).buffer, 0, (*b).allocationInfo.size);
+  }
+  std::vector<vk::WriteDescriptorSet> writeDescriptorSets;
+  for (uint32_t i = 0; i < dBIs.size(); i++) {
+    writeDescriptorSets.emplace_back(*descriptorSet, i, 0, 1, bufferTypes[i],
+                                     nullptr, &dBIs[i]);
+  }
+  device.updateDescriptorSets(writeDescriptorSets, {});
+  return ComputeInfo{std::move(pipelines),
+                     std::move(pipelineLayout),
+                     std::move(pipelineCache),
+                     std::move(descriptorSet),
+                     1,
+                     1,
+                     1};
+}
+
+void appendPipeline(vk::raii::CommandBuffer& commandBuffer,
+                    const ComputeInfo& cInfo, uint32_t n) {
+  commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
+                                vk::PipelineStageFlagBits::eAllCommands, {},
+                                fullMemoryBarrier, nullptr, nullptr);
+  commandBuffer.bindPipeline(vk::PipelineBindPoint::eCompute,
+                             *cInfo.pipeline[n]);
+  commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eCompute,
+                                   cInfo.layout, 0, {*cInfo.descriptorSet}, {});
+  commandBuffer.dispatch(cInfo.X, cInfo.Y, cInfo.Z);
 }
 
 RaiiVmaBuffer::RaiiVmaBuffer(VmaAllocator& Allocator,
@@ -92,21 +119,10 @@ RaiiVmaBuffer::RaiiVmaBuffer(VmaAllocator& Allocator,
                   &allocCreateInfo, &bufferRaw, &allocation, &allocationInfo);
   buffer = bufferRaw;
 }
+
 RaiiVmaBuffer::~RaiiVmaBuffer() {
-  std::cout << "Destroying buffer\n";
   vmaDestroyBuffer(*allocator, buffer, allocation);
 }
-
-void recordComputePipeline(vk::raii::CommandBuffer& commandBuffer,
-                           ComputeInfo ci) {
-  commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
-                                vk::PipelineStageFlagBits::eAllCommands, {},
-                                fullMemoryBarrier, nullptr, nullptr);
-  commandBuffer.bindPipeline(vk::PipelineBindPoint::eCompute, *ci.pipeline);
-  commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *ci.layout,
-                                   0, {*ci.descriptorSet}, {});
-  commandBuffer.dispatch(ci.X, ci.Y, ci.Z);
-};
 
 vk::raii::Instance makeInstance(const vk::raii::Context& context) {
   vk::ApplicationInfo appInfo{

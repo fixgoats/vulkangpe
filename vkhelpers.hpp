@@ -1,8 +1,7 @@
-#ifndef VMA_IMPLEMENTATION
-#define VMA_IMPLEMENTATION
-#endif // !VMA_IMPLEMENTATION
 #include "hack.hpp"
 #include "vk_mem_alloc.h"
+#include <cstdint>
+#include <vulkan/vulkan_raii.hpp>
 
 const vk::MemoryBarrier fullMemoryBarrier(vk::AccessFlagBits::eShaderRead |
                                               vk::AccessFlagBits::eMemoryWrite,
@@ -10,21 +9,13 @@ const vk::MemoryBarrier fullMemoryBarrier(vk::AccessFlagBits::eShaderRead |
                                               vk::AccessFlagBits::eMemoryWrite);
 
 struct ComputeInfo {
-  vk::raii::Pipeline pipeline;
+  std::vector<vk::raii::Pipeline> pipeline;
   vk::raii::PipelineLayout layout;
+  vk::raii::PipelineCache pipelineCache;
   vk::raii::DescriptorSet descriptorSet;
   uint32_t X;
   uint32_t Y;
   uint32_t Z;
-};
-
-void setupPipelines();
-
-struct RaiiVmaAllocator {
-  VmaAllocator allocator;
-  RaiiVmaAllocator(vk::raii::PhysicalDevice& physicalDevice,
-                   vk::raii::Device& device, vk::raii::Instance& instance);
-  ~RaiiVmaAllocator();
 };
 
 struct RaiiVmaBuffer {
@@ -39,12 +30,26 @@ struct RaiiVmaBuffer {
   ~RaiiVmaBuffer();
 };
 
+struct RaiiVmaAllocator {
+  VmaAllocator allocator;
+  RaiiVmaAllocator(vk::raii::PhysicalDevice& physicalDevice,
+                   vk::raii::Device& device, vk::raii::Instance& instance);
+  ~RaiiVmaAllocator();
+};
+
+ComputeInfo setupPipelines(vk::raii::Device& device,
+                           const std::vector<std::string>& binNames,
+                           std::vector<vk::DescriptorType> bufferTypes,
+                           std::vector<RaiiVmaBuffer*> buffers);
+void appendPipeline(vk::raii::CommandBuffer& commandBuffer,
+                    const ComputeInfo& cInfo, uint32_t n);
+
 std::vector<uint32_t> readFile(const std::string& filename);
 vk::raii::Instance makeInstance(const vk::raii::Context& context);
 vk::raii::PhysicalDevice pickPhysicalDevice(const vk::raii::Instance& instance,
                                             const int32_t desiredGPU = -1);
-void recordComputePipeline(vk::raii::CommandBuffer& commandBuffer,
-                           ComputeInfo ci);
+ComputeInfo recordComputePipeline(vk::raii::CommandBuffer& commandBuffer,
+                                  ComputeInfo ci);
 
 template <typename Func>
 void oneTimeSubmit(const vk::raii::Device& device,
