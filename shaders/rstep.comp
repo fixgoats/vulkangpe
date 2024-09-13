@@ -1,0 +1,49 @@
+#version 450
+
+#define c_mul(a, b) vec2((a.x*b.x)-(a.y*b.y), (a.x*b.y)+(a.y*b.x))
+#define rc_mul(r, z) vec2((r*z.x), (r*z.y))
+#define cr_mul(z, r) vec2((r*z.x), (r*z.y))
+#define rc_dib(z, r) vec2((z.x / r), (z.y / r))
+#define c_div(a, b) vec2((((a.x*b.x)+(a.y*b.y))/(dot(b,b))),(((a.y*b.x)-(a.x*b.y))/(dot(b,b))))
+#define c_modulus(a) length(a)
+#define c_conj(a) vec2(a.x, -a.y)
+#define c_arg(a) atan(a.y, a.x)
+#define c_sin(a) vec2((sin(a.x) * cosh(a.y)), (cos(a.x) * sinh(a.y)))
+#define c_cos(a) vec2((cos(a.x) * cosh(a.y)), -(sin(a.x) * sinh(a.y)))
+#define r_cos(a) vec2(cos(a.x), 0)
+#define c_exp(a) exp(a.x) * vec2(cos(a.y), sin(a.y))
+#define cis(x) vec2(cos(x), sin(x))
+#define normsqr(x) dot(x, x)
+layout(constant_id = 0) const uint NELEMENTSX = 512;
+layout(constant_id = 1) const uint NELEMENTSY = 512;
+layout(constant_id = 2) const uint XGROUPSIZE = 32;
+layout(constant_id = 3) const uint YGROUPSIZE = 32;
+layout(local_size_x_id = 2, local_size_y_id = 3, local_size_z = 1) in;
+layout(constant_id = 4) const float alpha = 0.0004;
+layout(constant_id = 5) const float gammalp = 0.2;
+layout(constant_id = 6) const float Gamma = 0.1;
+layout(constant_id = 7) const float G = 0.002;
+layout(constant_id = 8) const float R = 0.015;
+layout(constant_id = 9) const float eta = 2.;
+layout(constant_id = 10) const float dt = 0.1;
+
+layout(std430, set = 0, binding = 0) buffer PsiR { vec2 psiR[NELEMENTSX * NELEMENTSY]; };
+layout(std430, set = 0, binding = 1) buffer PsiK { vec2 psiK[NELEMENTSX * NELEMENTSY]; };
+layout(std430, set = 0, binding = 2) buffer NR { float nR[NELEMENTSX * NELEMENTSY]; };
+layout(std430, set = 0, binding = 3) buffer Pump { float pump[NELEMENTSX * NELEMENTSY]; };
+layout(std430, set = 0, binding = 4) buffer OldPsiR { vec2 oldPsiR[NELEMENTSX * NELEMENTSY]; };
+layout(std430, set = 0, binding = 5) buffer KTimeEvo { vec2 kTimeEvo[NELEMENTSX * NELEMENTSY]; };
+
+vec2 halfRTimeEvo(vec2 psi, float nr, float p) {
+    return c_exp(vec2(0.25*dt*(R*nr-gammalp), 0.5*dt*((G*eta/Gamma)*p + alpha * dot(psi, psi) + G*nr)));
+}
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    uint j = gl_GlobalInvocationID.y;
+
+    uint idx = j * NELEMENTSX + i;
+    oldPsiR[idx] = psiR[idx];
+    psiR[idx] = c_mul(halfRTimeEvo(psiR[idx], nR[idx], pump[idx]), psiR[idx]);
+}
+

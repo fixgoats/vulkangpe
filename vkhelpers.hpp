@@ -1,4 +1,6 @@
+#ifndef VMA_IMPLEMENTATION
 #define VMA_IMPLEMENTATION
+#endif // !VMA_IMPLEMENTATION
 #include "hack.hpp"
 #include "vk_mem_alloc.h"
 
@@ -15,6 +17,8 @@ struct ComputeInfo {
   uint32_t Y;
   uint32_t Z;
 };
+
+void setupPipelines();
 
 struct RaiiVmaAllocator {
   VmaAllocator allocator;

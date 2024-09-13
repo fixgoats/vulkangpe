@@ -1,9 +1,11 @@
 #include "vkhelpers.hpp"
 #include "hack.hpp"
+#include <cstdint>
 #include <fstream>
 #include <iostream>
 #include <vulkan/vulkan_enums.hpp>
 #include <vulkan/vulkan_raii.hpp>
+#include <vulkan/vulkan_structs.hpp>
 
 std::vector<uint32_t> readFile(const std::string& filename) {
   std::ifstream file(filename, std::ios::ate | std::ios::binary);
@@ -34,6 +36,51 @@ RaiiVmaAllocator::RaiiVmaAllocator(vk::raii::PhysicalDevice& physicalDevice,
 RaiiVmaAllocator::~RaiiVmaAllocator() {
   std::cout << "Destroying allocator\n";
   vmaDestroyAllocator(allocator);
+}
+
+void setupPipelines(vk::raii::Device& device,
+                    const std::vector<std::string>& binNames,
+                    std::vector<vk::DescriptorType> buffers) {
+  std::vector<vk::raii::ShaderModule> modules;
+  for (const auto& name : binNames) {
+    auto shaderCode = readFile(name);
+    vk::ShaderModuleCreateInfo shaderMCI(vk::ShaderModuleCreateFlags(),
+                                         shaderCode);
+    modules.emplace_back(vk::raii::ShaderModule(device, shaderMCI));
+  }
+
+  std::vector<vk::DescriptorSetLayoutBinding> dSLBs;
+  for (uint32_t i = 0; i < buffers.size(); i++) {
+    dSLBs.emplace_back(i, buffers[i], 1, vk::ShaderStageFlagBits::eCompute);
+  }
+
+  vk::DescriptorSetLayoutCreateInfo dSLCI(vk::DescriptorSetLayoutCreateFlags(),
+                                          dSLBs);
+  vk::raii::DescriptorSetLayout descriptorSetLayout(device, dSLCI);
+
+  vk::PipelineLayoutCreateInfo pLCI(vk::PipelineLayoutCreateFlags(),
+                                    *descriptorSetLayout);
+  vk::raii::PipelineLayout pipelineLayout(device, pLCI);
+  vk::raii::PipelineCache pipelineCache(device, vk::PipelineCacheCreateInfo());
+  std::vector<vk::raii::Pipeline> pipelines;
+  for (const auto& mod : modules) {
+    vk::PipelineShaderStageCreateInfo cSCI(vk::PipelineShaderStageCreateFlags(),
+                                           vk::ShaderStageFlagBits::eCompute,
+                                           *mod, "main");
+    vk::ComputePipelineCreateInfo cPCI(vk::PipelineCreateFlags(), cSCI,
+                                       *pipelineLayout);
+    pipelines.emplace_back(device, pipelineCache, cPCI);
+  }
+  vk::DescriptorPoolSize dPS(vk::DescriptorType::eStorageBuffer, 1);
+  vk::DescriptorPoolCreateInfo dPCI(
+      vk::DescriptorPoolCreateFlags(
+          vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet),
+      1, dPS);
+  vk::raii::DescriptorPool descriptorPool(device, dPCI);
+  vk::DescriptorSetAllocateInfo dSAI(*descriptorPool, 1, &*descriptorSetLayout);
+  vk::raii::DescriptorSets pDescriptorSets(device, dSAI);
+  vk::raii::DescriptorSet descriptorSet(std::move(pDescriptorSets[0]));
+  std::vector<vk::DescriptorBufferInfo> dBIs;
 }
 
 RaiiVmaBuffer::RaiiVmaBuffer(VmaAllocator& Allocator,

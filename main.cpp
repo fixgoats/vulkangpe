@@ -1,13 +1,11 @@
-#include <numeric>
-#define VMA_IMPLEMENTATION
 #include "hack.hpp"
-#include "vk_mem_alloc.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <numeric>
 #include <random>
 
 #include "vkFFT.h"
@@ -222,8 +220,10 @@ int main(int argc, char* argv[]) {
           vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet),
       1, descriptorPoolSize);
   vk::raii::DescriptorPool descriptorPool(device, dPCI);
+  psir.allocation->GetType()
 
-  vk::DescriptorSetAllocateInfo dSAI(*descriptorPool, 1, &*descriptorSetLayout);
+      vk::DescriptorSetAllocateInfo dSAI(*descriptorPool, 1,
+                                         &*descriptorSetLayout);
   vk::raii::DescriptorSets pDescriptorSets(device, dSAI);
   vk::raii::DescriptorSet descriptorSet(std::move(pDescriptorSets[0]));
   vk::DescriptorBufferInfo rspaceBufferInfo(rspaceBuffer, 0, stateBufferSize);
