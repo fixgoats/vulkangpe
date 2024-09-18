@@ -39,5 +39,5 @@ void fftshift(std::vector<T>& arr) {
 
 constexpr float pumpProfile(float x, float y, float L, float r, float beta) {
   return square(square(L)) /
-         (square(x * x + beta * y * y - r * r) + square(L * L));
+         (square(x * x + beta * y * y - r * r) + square(square(L)));
 }

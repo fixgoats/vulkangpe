@@ -52,7 +52,7 @@ constexpr float alpha = 0.0004;
 constexpr float gammalp = 0.2;
 constexpr float Gamma = 0.1;
 constexpr float G = 0.002;
-constexpr float R = 0.015;
+constexpr float R = 0.016;
 constexpr float eta = 2;
 constexpr float dt = 0.1;
 constexpr float m = 0.32;
@@ -80,6 +80,7 @@ struct VulkanApp {
   vk::PipelineCache pipelineCache;
   std::vector<vk::Pipeline> computePipelines;
   std::vector<vk::DescriptorSet> descriptorSets;
+  vk::DescriptorSet descriptorSet;
   vk::DescriptorPool descriptorPool;
   vk::CommandPool commandPool;
   vk::CommandBuffer commandBuffer;
@@ -89,7 +90,7 @@ struct VulkanApp {
 
   VulkanApp(SimConstants consts) {
     nSpecConsts = 11;
-    nComplexBuffers = 4;
+    nComplexBuffers = 3;
     nFloatBuffers = 2;
     params = consts;
     vk::ApplicationInfo appInfo{appName.c_str(), 1, nullptr, 0,
@@ -103,7 +104,7 @@ struct VulkanApp {
     instance = vk::createInstance(iCI);
     pDevice = pickPhysicalDevice(instance);
     uint32_t computeQueueFamilyIndex = getComputeQueueFamilyIndex();
-    float queuePriority = 0.0f;
+    float queuePriority = 1.0f;
     vk::DeviceQueueCreateInfo dQCI(vk::DeviceQueueCreateFlags(),
                                    computeQueueFamilyIndex, 1, &queuePriority);
     vk::DeviceCreateInfo dCI(vk::DeviceCreateFlags(), dQCI);
@@ -170,13 +171,14 @@ struct VulkanApp {
     conf.commandPool = reinterpret_cast<VkCommandPool*>(&commandPool);
     conf.physicalDevice = reinterpret_cast<VkPhysicalDevice*>(&pDevice);
     conf.normalize = 1;
-    conf.isInputFormatted = true;
+    // conf.isInputFormatted = true;
     conf.bufferNum = 1;
-    conf.inputBuffer = reinterpret_cast<VkBuffer*>(&computeBuffers[0].buffer);
-    conf.buffer = reinterpret_cast<VkBuffer*>(&computeBuffers[1].buffer);
+    // conf.inputBuffer =
+    // reinterpret_cast<VkBuffer*>(&computeBuffers[0].buffer);
+    conf.buffer = reinterpret_cast<VkBuffer*>(&computeBuffers[0].buffer);
     conf.bufferSize = &computeBuffers[0].aInfo.size;
-    conf.inputBufferSize = &computeBuffers[0].aInfo.size;
-    conf.inverseReturnToInputBuffer = true;
+    // conf.inputBufferSize = &computeBuffers[0].aInfo.size;
+    // conf.inverseReturnToInputBuffer = true;
     auto resFFT = initializeVkFFT(&app, conf);
     setupPipelines(moduleNames);
   }
@@ -223,6 +225,7 @@ struct VulkanApp {
 
     vk::SubmitInfo submitInfo(0, nullptr, nullptr, 1, &commandBuffer);
     queue.submit(submitInfo, fence);
+    queue.waitIdle();
     auto result = device.waitForFences({fence}, true, -1);
   }
 
@@ -265,11 +268,11 @@ struct VulkanApp {
       for (uint32_t i = 0; i < nElementsX; i++) {
         float x = (float)i * dX + startX;
         fStagingPtr[j * nElementsX + i] =
-            p * (pumpProfile(x - 8., y, l, r, beta) +
-                 pumpProfile(x + 8., y, l, r, beta));
+            p * (pumpProfile(x - 13., y, l, r, beta) +
+                 pumpProfile(x + 13., y, l, r, beta));
       }
     }
-    copyBuffers(staging.buffer, computeBuffers[5].buffer,
+    copyBuffers(staging.buffer, computeBuffers[4].buffer,
                 params.elementsTotal() * sizeof(float));
   }
 
@@ -283,7 +286,7 @@ struct VulkanApp {
             std::exp(c32{0., -(0.5f * hbar * dt / m) * (kY * kY + kX * kX)});
       }
     }
-    copyBuffers(staging.buffer, computeBuffers[2].buffer,
+    copyBuffers(staging.buffer, computeBuffers[1].buffer,
                 params.elementsTotal() * sizeof(c32));
   }
 
@@ -292,7 +295,7 @@ struct VulkanApp {
     for (uint32_t i = 0; i < params.elementsTotal(); i++) {
       fStagingPtr[i] = 0.;
     }
-    copyBuffers(staging.buffer, computeBuffers[4].buffer,
+    copyBuffers(staging.buffer, computeBuffers[3].buffer,
                 params.elementsTotal() * sizeof(float));
   }
 
@@ -362,7 +365,7 @@ struct VulkanApp {
     descriptorPool = device.createDescriptorPool(dPCI);
     vk::DescriptorSetAllocateInfo dSAI(descriptorPool, 1, &dSL);
     descriptorSets = device.allocateDescriptorSets(dSAI);
-    vk::DescriptorSet descriptorSet = descriptorSets[0];
+    descriptorSet = descriptorSets[0];
     std::vector<vk::DescriptorBufferInfo> dBIs;
     for (const auto& b : computeBuffers) {
       dBIs.emplace_back(b.buffer, 0, b.aInfo.size);
@@ -376,9 +379,9 @@ struct VulkanApp {
     device.updateDescriptorSets(writeDescriptorSets, {});
   }
 
-  std::vector<c32> outputPsiR() {
+  std::vector<c32> outputPsi(uint32_t n) {
     c32* sStagingPtr = reinterpret_cast<c32*>(staging.aInfo.pMappedData);
-    copyBuffers(computeBuffers[0].buffer, staging.buffer,
+    copyBuffers(computeBuffers[n].buffer, staging.buffer,
                 params.elementsTotal() * sizeof(c32));
     std::vector<c32> retVec(params.elementsTotal());
     memcpy(retVec.data(), sStagingPtr, params.elementsTotal() * sizeof(c32));
@@ -388,38 +391,28 @@ struct VulkanApp {
   ~VulkanApp() {
     device.waitIdle();
     deleteVkFFT(&app);
-    std::cout << "crashed at point 1";
     device.destroyFence(fence);
-    std::cout << "crashed at point 2";
     for (auto& p : computePipelines) {
       device.destroyPipeline(p);
     }
-    std::cout << "crashed at point 3";
     device.destroyPipelineCache(pipelineCache);
-    std::cout << "crashed at point 4";
     device.destroyDescriptorPool(descriptorPool);
-    std::cout << "crashed at point 5";
     for (auto& m : modules) {
       device.destroyShaderModule(m);
     }
-    std::cout << "crashed at point 6";
     device.destroyPipelineLayout(pipelineLayout);
-    std::cout << "crashed at point 7";
     device.destroyDescriptorSetLayout(dSL);
-    std::cout << "crashed at point 8";
+    staging.extirpate(allocator);
     for (auto& b : computeBuffers) {
       b.extirpate(allocator);
     }
-    std::cout << "crashed at point 9";
     vmaDestroyAllocator(allocator);
-    std::cout << "crashed at point 10";
     device.destroyCommandPool(commandPool);
-    std::cout << "crashed at point 11";
     device.destroy();
-    std::cout << "crashed at point 12";
     instance.destroy();
   }
 };
+
 int main(int argc, char* argv[]) {
   cxxopts::Options options(appName,
                            "Vulkan simulation of Gross-Pitaevskii equation");
@@ -435,13 +428,15 @@ int main(int argc, char* argv[]) {
     std::cout << "Uploaded data\n";
     auto n = result["n"].as<uint32_t>();
     GPEsim.runSim(n);
-    auto psiR = GPEsim.outputPsiR();
+    auto psiR = GPEsim.outputPsi(0);
     std::vector<float> a(GPEsim.params.elementsTotal());
     std::transform(psiR.begin(), psiR.end(), a.begin(), [](c32 x) {
       return x.imag() * x.imag() + x.real() * x.real();
     });
     cv::Mat img(nElementsX, nElementsY, CV_8UC1);
-    auto maxinv = 1 / *std::max_element(a.begin(), a.end());
+    const auto max = *std::max_element(a.begin(), a.end());
+    std::cout << max << '\n';
+    const auto maxinv = 1 / max;
     std::transform(a.begin(), a.end(), img.begin<char>(), [&](float x) {
       return static_cast<char>(x * maxinv * 256);
     });
@@ -456,11 +451,6 @@ int main(int argc, char* argv[]) {
   } else if (result.count("d")) {
     VulkanApp GPEsim(
         {nElementsX, nElementsY, 2, 2, alpha, gammalp, Gamma, G, R, eta, dt});
-    std::vector<float> ks =
-        GPEsim.troubleshootKvecs(); // GPEsim.troubleshootKvecs();
-    for (const auto& k : ks) {
-      std::cout << k << ' ';
-    }
     return 0;
   } else {
     throw std::runtime_error("gib n\n");
