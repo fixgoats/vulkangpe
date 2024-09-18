@@ -16,7 +16,6 @@
 #include "vkFFT.h"
 #include <complex>
 #include <cxxopts.hpp>
-#include <matplot/matplot.h>
 #include <opencv2/core.hpp>
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgcodecs.hpp>
@@ -36,10 +35,10 @@ constexpr uint32_t nElementsX = 512;
 constexpr uint32_t nElementsY = 512;
 constexpr uint32_t xGroupSize = 32;
 constexpr uint32_t yGroupSize = 32;
-constexpr float startX = 0.;
-constexpr float endX = 128.;
-constexpr float startY = 0.;
-constexpr float endY = 128.;
+constexpr float startX = -64.;
+constexpr float endX = 64.;
+constexpr float startY = -64.;
+constexpr float endY = 64.;
 constexpr float dX = (endX - startX) / (float)nElementsX;
 constexpr float dY = (endY - startY) / (float)nElementsY;
 constexpr float endKx = M_PI / dX;
@@ -251,22 +250,23 @@ struct VulkanApp {
                                      pipelineLayout, 0, {descriptorSets[0]},
                                      {});
     commandBuffer.dispatch(params.X(), params.Y(), 1);
+    commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
+                                  vk::PipelineStageFlagBits::eAllCommands, {},
+                                  fullMemoryBarrier, nullptr, nullptr);
   }
 
   void initPump() {
     float l = 2.2;
     float r = 5.1;
     float beta = 1.0;
-    float x0 = 64.;
-    float y0 = 64.;
     float* fStagingPtr = reinterpret_cast<float*>(staging.aInfo.pMappedData);
     for (uint32_t j = 0; j < nElementsY; j++) {
       float y = (float)j * dY + startY;
       for (uint32_t i = 0; i < nElementsX; i++) {
         float x = (float)i * dX + startX;
         fStagingPtr[j * nElementsX + i] =
-            p * (pumpProfile(x - x0 - 8., y - y0, l, r, beta) +
-                 pumpProfile(x - x0 + 8., y - y0, l, r, beta));
+            p * (pumpProfile(x - 8., y, l, r, beta) +
+                 pumpProfile(x + 8., y, l, r, beta));
       }
     }
     copyBuffers(staging.buffer, computeBuffers[5].buffer,
@@ -285,14 +285,6 @@ struct VulkanApp {
     }
     copyBuffers(staging.buffer, computeBuffers[2].buffer,
                 params.elementsTotal() * sizeof(c32));
-  }
-
-  std::vector<float> troubleshootKvecs() {
-    std::vector<float> ks(nElementsX);
-    for (uint32_t i = 0; i < nElementsX; i++) {
-      ks[i] = (float)fftshiftidx(i, nElementsX) * dKx + startKx;
-    }
-    return std::move(ks);
   }
 
   void initNR() {
@@ -390,7 +382,7 @@ struct VulkanApp {
                 params.elementsTotal() * sizeof(c32));
     std::vector<c32> retVec(params.elementsTotal());
     memcpy(retVec.data(), sStagingPtr, params.elementsTotal() * sizeof(c32));
-    return retVec;
+    return std::move(retVec);
   }
 
   ~VulkanApp() {
