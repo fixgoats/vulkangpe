@@ -29,13 +29,13 @@ layout(constant_id = 10) const float dt = 0.1;
 
 layout(std430, set = 0, binding = 0) buffer PsiR { vec2 psiR[NELEMENTSX * NELEMENTSY]; };
 layout(std430, set = 0, binding = 1) buffer PsiK { vec2 psiK[NELEMENTSX * NELEMENTSY]; };
-layout(std430, set = 0, binding = 2) buffer NR { float nR[NELEMENTSX * NELEMENTSY]; };
-layout(std430, set = 0, binding = 3) buffer Pump { float pump[NELEMENTSX * NELEMENTSY]; };
-layout(std430, set = 0, binding = 4) buffer OldPsiR { vec2 oldPsiR[NELEMENTSX * NELEMENTSY]; };
-layout(std430, set = 0, binding = 5) buffer KTimeEvo { vec2 kTimeEvo[NELEMENTSX * NELEMENTSY]; };
+layout(std430, set = 0, binding = 2) buffer KTimeEvo { vec2 kTimeEvo[NELEMENTSX * NELEMENTSY]; };
+layout(std430, set = 0, binding = 3) buffer OldPsiR { vec2 oldPsiR[NELEMENTSX * NELEMENTSY]; };
+layout(std430, set = 0, binding = 4) buffer NR { float nR[NELEMENTSX * NELEMENTSY]; };
+layout(std430, set = 0, binding = 5) buffer Pump { float pump[NELEMENTSX * NELEMENTSY]; };
 
 vec2 halfRTimeEvo(vec2 psi, float nr, float p) {
-    return c_exp(vec2(0.25*dt*(R*nr-gammalp), 0.5*dt*((G*eta/Gamma)*p + alpha * dot(psi, psi) + G*nr)));
+    return c_exp(vec2(0.25*dt*(R*nr-gammalp), -0.5*dt*((G*eta/Gamma)*p + alpha * dot(psi, psi) + G*nr)));
 }
 
 void main() {

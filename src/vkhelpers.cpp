@@ -1,6 +1,7 @@
+#include <cstddef>
 #define VMA_IMPLEMENTATION
-#include "vkhelpers.hpp"
 #include "vk_mem_alloc.h"
+#include "vkhelpers.hpp"
 #include <cstdint>
 #include <fstream>
 #include <iostream>
@@ -22,7 +23,7 @@ std::vector<uint32_t> readFile(const std::string& filename) {
   file.close();
   return buffer;
 }
-
+/*
 RaiiVmaAllocator::RaiiVmaAllocator(vk::raii::PhysicalDevice& physicalDevice,
                                    vk::raii::Device& device,
                                    vk::raii::Instance& instance) {
@@ -39,7 +40,8 @@ RaiiVmaAllocator::~RaiiVmaAllocator() { vmaDestroyAllocator(allocator); }
 ComputeInfo setupPipelines(vk::raii::Device& device,
                            const std::vector<std::string>& binNames,
                            std::vector<vk::DescriptorType> bufferTypes,
-                           std::vector<RaiiVmaBuffer*> buffers) {
+                           std::vector<RaiiVmaBuffer*> buffers,
+                           SimConstants ahhh, uint32_t n) {
   std::vector<vk::raii::ShaderModule> modules;
   for (const auto& name : binNames) {
     auto shaderCode = readFile(name);
@@ -62,14 +64,31 @@ ComputeInfo setupPipelines(vk::raii::Device& device,
   vk::raii::PipelineLayout pipelineLayout(device, pLCI);
   vk::raii::PipelineCache pipelineCache(device, vk::PipelineCacheCreateInfo());
   std::vector<vk::raii::Pipeline> pipelines;
+  std::vector<vk::SpecializationMapEntry> bleh(n);
+  for (uint32_t i = 0; i < n; i++) {
+    bleh[i].constantID = i;
+    bleh[i].offset = i * 4;
+    bleh[i].size = 4;
+  }
+  vk::SpecializationInfo specInfo;
+  specInfo.mapEntryCount = n;
+  specInfo.pMapEntries = bleh.data();
+  specInfo.dataSize = sizeof(SimConstants);
+  specInfo.pData = &ahhh;
+  assert(ahhh.nElementsX % ahhh.xGroupSize == 0);
+  assert(ahhh.nElementsY % ahhh.yGroupSize == 0);
+  uint32_t X = ahhh.nElementsX / ahhh.xGroupSize;
+  uint32_t Y = ahhh.nElementsY / ahhh.yGroupSize;
+
   for (const auto& mod : modules) {
     vk::PipelineShaderStageCreateInfo cSCI(vk::PipelineShaderStageCreateFlags(),
                                            vk::ShaderStageFlagBits::eCompute,
-                                           *mod, "main");
+                                           *mod, "main", &specInfo);
     vk::ComputePipelineCreateInfo cPCI(vk::PipelineCreateFlags(), cSCI,
                                        *pipelineLayout);
     pipelines.emplace_back(device, pipelineCache, cPCI);
   }
+
   vk::DescriptorPoolSize dPS(vk::DescriptorType::eStorageBuffer, 1);
   vk::DescriptorPoolCreateInfo dPCI(
       vk::DescriptorPoolCreateFlags(
@@ -92,9 +111,11 @@ ComputeInfo setupPipelines(vk::raii::Device& device,
   return ComputeInfo{std::move(pipelines),
                      std::move(pipelineLayout),
                      std::move(pipelineCache),
+                     std::move(descriptorPool),
+                     std::move(pDescriptorSets),
                      std::move(descriptorSet),
-                     1,
-                     1,
+                     X,
+                     Y,
                      1};
 }
 
@@ -110,21 +131,50 @@ void appendPipeline(vk::raii::CommandBuffer& commandBuffer,
   commandBuffer.dispatch(cInfo.X, cInfo.Y, cInfo.Z);
 }
 
-RaiiVmaBuffer::RaiiVmaBuffer(VmaAllocator& Allocator,
-                             VmaAllocationCreateInfo& allocCreateInfo,
-                             vk::BufferCreateInfo& BCI) {
-  allocator = &Allocator;
-  VkBuffer bufferRaw;
-  vmaCreateBuffer(*allocator, reinterpret_cast<VkBufferCreateInfo*>(&BCI),
-                  &allocCreateInfo, &bufferRaw, &allocation, &allocationInfo);
-  buffer = bufferRaw;
+void appendPipeline(vk::CommandBuffer& commandBuffer,
+                    const vk::Pipeline& pipeline,
+                    const vk::PipelineLayout& pipelineLayout,
+                    const vk::DescriptorSet descriptorSet, WorkGroups groups) {
+  commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
+                                vk::PipelineStageFlagBits::eAllCommands, {},
+                                fullMemoryBarrier, nullptr, nullptr);
+  commandBuffer.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline);
+  commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eCompute,
+                                   pipelineLayout, 0, {descriptorSet}, {});
+  commandBuffer.dispatch(groups.X, groups.Y, groups.Z);
+}
+*/
+
+MetaBuffer::MetaBuffer() {
+  buffer = vk::Buffer{};
+  allocation = VmaAllocation{};
+  aInfo = VmaAllocationInfo{};
 }
 
-RaiiVmaBuffer::~RaiiVmaBuffer() {
-  vmaDestroyBuffer(*allocator, buffer, allocation);
+MetaBuffer::MetaBuffer(VmaAllocator& allocator,
+                       VmaAllocationCreateInfo& allocCreateInfo,
+                       vk::BufferCreateInfo& BCI) {
+  buffer = vk::Buffer{};
+  allocation = VmaAllocation{};
+  aInfo = VmaAllocationInfo{};
+  vmaCreateBuffer(allocator, reinterpret_cast<VkBufferCreateInfo*>(&BCI),
+                  &allocCreateInfo, reinterpret_cast<VkBuffer*>(&buffer),
+                  &allocation, &aInfo);
 }
 
-vk::raii::Instance makeInstance(const vk::raii::Context& context) {
+void MetaBuffer::allocate(VmaAllocator& allocator,
+                          VmaAllocationCreateInfo& allocCreateInfo,
+                          vk::BufferCreateInfo& BCI) {
+  vmaCreateBuffer(allocator, reinterpret_cast<VkBufferCreateInfo*>(&BCI),
+                  &allocCreateInfo, reinterpret_cast<VkBuffer*>(&buffer),
+                  &allocation, &aInfo);
+}
+
+void MetaBuffer::extirpate(VmaAllocator& allocator) {
+  vmaDestroyBuffer(allocator, static_cast<VkBuffer>(buffer), allocation);
+}
+
+/*vk::raii::Instance makeInstance(const vk::raii::Context& context) {
   vk::ApplicationInfo appInfo{
       "VulkanCompute",   // Application Name
       1,                 // Application Version
@@ -139,23 +189,24 @@ vk::raii::Instance makeInstance(const vk::raii::Context& context) {
                                             layers,   // Layers
                                             {});      // Extensions
   return vk::raii::Instance(context, instanceCreateInfo);
-}
+}*/
 
-vk::raii::PhysicalDevice pickPhysicalDevice(const vk::raii::Instance& instance,
-                                            const int32_t desiredGPU) {
+vk::PhysicalDevice pickPhysicalDevice(const vk::Instance& instance,
+                                      const int32_t desiredGPU) {
   // check if there are GPUs that support Vulkan and "intelligently" select
   // one. Prioritises discrete GPUs, and after that VRAM size.
-  vk::raii::PhysicalDevices physicalDevices(instance);
-  uint32_t nDevices = physicalDevices.size();
+  std::vector<vk::PhysicalDevice> pDevices =
+      instance.enumeratePhysicalDevices();
+  uint32_t nDevices = pDevices.size();
 
   // shortcut if there's only one device available.
   if (nDevices == 1) {
-    return vk::raii::PhysicalDevice(std::move(physicalDevices[0]));
+    return pDevices[0];
   }
   // Try to select desired GPU if specified.
   if (desiredGPU > -1) {
     if (desiredGPU < static_cast<int32_t>(nDevices)) {
-      return vk::raii::PhysicalDevice(std::move(physicalDevices[desiredGPU]));
+      return pDevices[desiredGPU];
     } else {
       std::cout << "Device not available\n";
     }
@@ -164,12 +215,12 @@ vk::raii::PhysicalDevice pickPhysicalDevice(const vk::raii::Instance& instance,
   std::vector<uint32_t> discrete; // the indices of the available discrete gpus
   std::vector<uint64_t> vram(nDevices);
   for (uint32_t i = 0; i < nDevices; i++) {
-    if (physicalDevices[i].getProperties().deviceType ==
+    if (pDevices[i].getProperties().deviceType ==
         vk::PhysicalDeviceType::eDiscreteGpu) {
       discrete.push_back(i);
     }
 
-    auto heaps = physicalDevices[i].getMemoryProperties().memoryHeaps;
+    auto heaps = pDevices[i].getMemoryProperties().memoryHeaps;
     for (const auto& heap : heaps) {
       if (heap.flags & vk::MemoryHeapFlagBits::eDeviceLocal) {
         vram[i] = heap.size;
@@ -180,7 +231,7 @@ vk::raii::PhysicalDevice pickPhysicalDevice(const vk::raii::Instance& instance,
   // only consider discrete gpus if available´:
   if (discrete.size() > 0) {
     if (discrete.size() == 1) {
-      return vk::raii::PhysicalDevice(std::move(physicalDevices[discrete[0]]));
+      return pDevices[discrete[0]];
     } else {
       uint32_t max = 0;
       uint32_t selectedGPU = 0;
@@ -190,7 +241,7 @@ vk::raii::PhysicalDevice pickPhysicalDevice(const vk::raii::Instance& instance,
           selectedGPU = index;
         }
       }
-      return vk::raii::PhysicalDevice(std::move(physicalDevices[selectedGPU]));
+      return pDevices[selectedGPU];
     }
   } else {
     uint32_t max = 0;
@@ -201,6 +252,6 @@ vk::raii::PhysicalDevice pickPhysicalDevice(const vk::raii::Instance& instance,
         selectedGPU = i;
       }
     }
-    return vk::raii::PhysicalDevice(std::move(physicalDevices[selectedGPU]));
+    return pDevices[selectedGPU];
   }
 }

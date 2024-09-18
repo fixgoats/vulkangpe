@@ -2,3 +2,5 @@ BasedOnStyle: LLVM
 IndentWidth: 2
 DerivePointerAlignment: false
 PointerAlignment: Left
+AlwaysBreakTemplateDeclarations: Yes
+
