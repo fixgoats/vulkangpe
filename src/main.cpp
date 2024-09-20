@@ -163,7 +163,6 @@ struct VulkanApp {
                                             "finalstep.spv"};
     conf.device = (VkDevice*)&device;
     conf.FFTdim = 2;
-    std::cout << conf.FFTdim << '\n';
     conf.size[0] = params.nElementsX;
     conf.size[1] = params.nElementsY;
     conf.queue = reinterpret_cast<VkQueue*>(&queue);
@@ -174,35 +173,36 @@ struct VulkanApp {
     conf.bufferSize = &computeBuffers[0].aInfo.size;
     conf.normalize = 1;
     auto resFFT = initializeVkFFT(&app, conf);
-    std::cout << resFFT << '\n';
-    std::cout << app.configuration.FFTdim << '\n';
     setupPipelines(moduleNames);
   }
 
   void copyBuffers(vk::Buffer& srcBuffer, vk::Buffer& dstBuffer,
                    uint32_t bufferSize) {
-    vk::CommandBufferBeginInfo cBBI(
+    /*vk::CommandBufferBeginInfo cBBI(
         vk::CommandBufferUsageFlagBits::eOneTimeSubmit);
     vk::CommandBuffer tmpBuffer =
         device
             .allocateCommandBuffers(
                 {commandPool, vk::CommandBufferLevel::ePrimary, 1})
-            .front();
+            .front();*/
+    commandBuffer.reset();
+    vk::CommandBufferBeginInfo cBBI(
+        vk::CommandBufferUsageFlagBits::eOneTimeSubmit);
+    commandBuffer.begin(cBBI);
 
-    tmpBuffer.reset();
-    tmpBuffer.begin(cBBI);
-    tmpBuffer.copyBuffer(srcBuffer, dstBuffer,
-                         vk::BufferCopy(0, 0, bufferSize));
-    tmpBuffer.end();
-    vk::SubmitInfo submitInfo(nullptr, nullptr, tmpBuffer);
+    commandBuffer.begin(cBBI);
+    commandBuffer.copyBuffer(srcBuffer, dstBuffer,
+                             vk::BufferCopy(0, 0, bufferSize));
+    commandBuffer.end();
+    vk::SubmitInfo submitInfo(nullptr, nullptr, commandBuffer);
     queue.submit(submitInfo, fence);
     queue.waitIdle();
+    auto result = device.waitForFences({fence}, true, -1);
 
-    device.freeCommandBuffers(commandPool, 1, &tmpBuffer);
+    device.freeCommandBuffers(commandPool, 1, &commandBuffer);
   }
 
   void runSim(uint32_t n) {
-    std::cout << app.configuration.FFTdim;
     commandBuffer.reset();
     vk::CommandBufferBeginInfo cBBI(
         vk::CommandBufferUsageFlagBits::eOneTimeSubmit);
@@ -224,6 +224,7 @@ struct VulkanApp {
     queue.submit(submitInfo, fence);
     queue.waitIdle();
     auto result = device.waitForFences({fence}, true, -1);
+    device.freeCommandBuffers(commandPool, 1, &commandBuffer);
   }
 
   void initPsiR() {
@@ -235,14 +236,6 @@ struct VulkanApp {
         sStagingPtr[j * params.nElementsX + i] = c32{dis(gen), dis(gen)};
       }
     }
-    // c32* sStagingPtr = reinterpret_cast<c32*>(staging.aInfo.pMappedData);
-    // for (uint32_t j = 0; j < nElementsY; j++) {
-    //   float y = (float)j * dY + startY;
-    //   for (uint32_t i = 0; i < nElementsX; i++) {
-    //     float x = (float)i * dX + startX;
-    //     sStagingPtr[j * params.nElementsX + i] = c32{-x * x - y * y, 0};
-    //   }
-    // }
 
     copyBuffers(staging.buffer, computeBuffers[0].buffer,
                 params.elementsTotal() * sizeof(c32));
@@ -258,9 +251,9 @@ struct VulkanApp {
                                      pipelineLayout, 0, {descriptorSets[0]},
                                      {});
     commandBuffer.dispatch(params.X(), params.Y(), 1);
-    commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
-                                  vk::PipelineStageFlagBits::eAllCommands, {},
-                                  fullMemoryBarrier, nullptr, nullptr);
+    // commandBuffer.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
+    //                               vk::PipelineStageFlagBits::eAllCommands,
+    //                               {}, fullMemoryBarrier, nullptr, nullptr);
   }
 
   void initPump() {
@@ -460,12 +453,22 @@ int main(int argc, char* argv[]) {
     auto n = result["n"].as<uint32_t>();
     cv::Mat img(nElementsX, nElementsY, CV_8UC1);
     cv::Mat out_img(nElementsX, nElementsY, CV_8UC3);
-    GPEsim.runSim(n);
     auto psiR = GPEsim.outputBuffer<c32>(0);
     std::vector<float> a(GPEsim.params.elementsTotal());
     std::transform(psiR.begin(), psiR.end(), a.begin(),
                    [](c32 x) { return square(x.real()) + square(x.imag()); });
     auto max = *std::max_element(a.begin(), a.end());
+    std::cout << max << '\n';
+    GPEsim.runSim(n);
+    psiR = GPEsim.outputBuffer<c32>(0);
+    std::transform(psiR.begin(), psiR.end(), a.begin(),
+                   [](c32 x) { return square(x.real()) + square(x.imag()); });
+    max = *std::max_element(a.begin(), a.end());
+    std::cout << max << '\n';
+    psiR = GPEsim.outputBuffer<c32>(0);
+    std::transform(psiR.begin(), psiR.end(), a.begin(),
+                   [](c32 x) { return square(x.real()) + square(x.imag()); });
+    max = *std::max_element(a.begin(), a.end());
     std::cout << max << '\n';
     auto maxinv = 1 / max;
     std::transform(a.begin(), a.end(), img.begin<char>(), [&](float x) {
