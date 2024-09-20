@@ -33,31 +33,6 @@ const vk::MemoryBarrier fullMemoryBarrier(vk::AccessFlagBits::eShaderRead |
                                           vk::AccessFlagBits::eMemoryRead |
                                               vk::AccessFlagBits::eMemoryWrite);
 
-/*struct ComputeInfo {
-  std::vector<vk::raii::Pipeline> pipeline;
-  vk::raii::PipelineLayout layout;
-  vk::raii::PipelineCache pipelineCache;
-  vk::raii::DescriptorPool descriptorPool;
-  vk::raii::DescriptorSets descriptorSets;
-  vk::raii::DescriptorSet descriptorSet;
-  uint32_t X;
-  uint32_t Y;
-  uint32_t Z;
-};
-
-struct RaiiVmaBuffer {
-  // RaiiVmaAllocator takes care of deleting itself
-  VmaAllocator* allocator;
-  vk::Buffer buffer;
-  VmaAllocation allocation;
-  VmaAllocationInfo allocationInfo;
-  RaiiVmaBuffer();
-  RaiiVmaBuffer(VmaAllocator& Allocator,
-                VmaAllocationCreateInfo& allocCreateInfo,
-                vk::BufferCreateInfo& BCI);
-  ~RaiiVmaBuffer();
-};*/
-
 struct MetaBuffer {
   vk::Buffer buffer;
   VmaAllocation allocation;
@@ -72,30 +47,10 @@ struct MetaBuffer {
   void extirpate(VmaAllocator& allocator);
 };
 
-/*struct RaiiVmaAllocator {
-  VmaAllocator allocator;
-  RaiiVmaAllocator(vk::raii::PhysicalDevice& physicalDevice,
-                   vk::raii::Device& device, vk::raii::Instance& instance);
-  ~RaiiVmaAllocator();
-};
-
-ComputeInfo setupPipelines(vk::raii::Device& device,
-                           const std::vector<std::string>& binNames,
-                           std::vector<vk::DescriptorType> bufferTypes,
-                           std::vector<RaiiVmaBuffer*> buffers,
-                           SimConstants ahhh, uint32_t n);
-void appendPipeline(vk::raii::CommandBuffer& commandBuffer,
-                    const ComputeInfo& cInfo, uint32_t n);
-
-void appendPipeline(vk::CommandBuffer& commandBuffer, const ComputeInfo& cInfo,
-                    uint32_t n);*/
-
 std::vector<uint32_t> readFile(const std::string& filename);
 vk::raii::Instance makeInstance(const vk::raii::Context& context);
 vk::PhysicalDevice pickPhysicalDevice(const vk::Instance& instance,
                                       const int32_t desiredGPU = -1);
-/*ComputeInfo recordComputePipeline(vk::raii::CommandBuffer& commandBuffer,
-                                  ComputeInfo ci);*/
 
 template <typename Func>
 void oneTimeSubmit(const vk::Device& device, const vk::CommandPool& commandPool,

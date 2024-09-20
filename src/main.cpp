@@ -33,8 +33,8 @@
 constexpr float hbar = 6.582119569e-1;
 constexpr uint32_t nElementsX = 512;
 constexpr uint32_t nElementsY = 512;
-constexpr uint32_t xGroupSize = 32;
-constexpr uint32_t yGroupSize = 32;
+constexpr uint32_t xGroupSize = 16;
+constexpr uint32_t yGroupSize = 16;
 constexpr float startX = -64.;
 constexpr float endX = 64.;
 constexpr float startY = -64.;
@@ -53,12 +53,12 @@ constexpr float gammalp = 0.2;
 constexpr float Gamma = 0.1;
 constexpr float G = 0.002;
 constexpr float R = 0.016;
-constexpr float eta = 2;
-constexpr float dt = 0.1;
+constexpr float eta = 2.;
+constexpr float dt = 0.05;
 constexpr float m = 0.32;
 constexpr float p = 9.2;
 
-static std::string appName{"Vulkan GPE Simulator"};
+static const std::string appName{"Vulkan GPE Simulator"};
 
 struct VulkanApp {
   vk::Instance instance;
@@ -84,7 +84,8 @@ struct VulkanApp {
   vk::DescriptorPool descriptorPool;
   vk::CommandPool commandPool;
   vk::CommandBuffer commandBuffer;
-  VkFFTApplication app;
+  VkFFTConfiguration conf;
+  VkFFTApplication app{};
 
   std::random_device rd;
 
@@ -160,26 +161,21 @@ struct VulkanApp {
     }
     std::vector<std::string> moduleNames = {"rstep.spv", "kstep.spv",
                                             "finalstep.spv"};
-    VkFFTConfiguration conf{};
-    conf.device = (VkDevice*)&*device;
+    conf.device = (VkDevice*)&device;
     conf.FFTdim = 2;
+    std::cout << conf.FFTdim << '\n';
     conf.size[0] = params.nElementsX;
     conf.size[1] = params.nElementsY;
-    conf.numberBatches = 1;
     conf.queue = reinterpret_cast<VkQueue*>(&queue);
     conf.fence = reinterpret_cast<VkFence*>(&fence);
     conf.commandPool = reinterpret_cast<VkCommandPool*>(&commandPool);
     conf.physicalDevice = reinterpret_cast<VkPhysicalDevice*>(&pDevice);
-    conf.normalize = 1;
-    // conf.isInputFormatted = true;
-    conf.bufferNum = 1;
-    // conf.inputBuffer =
-    // reinterpret_cast<VkBuffer*>(&computeBuffers[0].buffer);
     conf.buffer = reinterpret_cast<VkBuffer*>(&computeBuffers[0].buffer);
     conf.bufferSize = &computeBuffers[0].aInfo.size;
-    // conf.inputBufferSize = &computeBuffers[0].aInfo.size;
-    // conf.inverseReturnToInputBuffer = true;
+    conf.normalize = 1;
     auto resFFT = initializeVkFFT(&app, conf);
+    std::cout << resFFT << '\n';
+    std::cout << app.configuration.FFTdim << '\n';
     setupPipelines(moduleNames);
   }
 
@@ -206,6 +202,7 @@ struct VulkanApp {
   }
 
   void runSim(uint32_t n) {
+    std::cout << app.configuration.FFTdim;
     commandBuffer.reset();
     vk::CommandBufferBeginInfo cBBI(
         vk::CommandBufferUsageFlagBits::eOneTimeSubmit);
@@ -238,6 +235,14 @@ struct VulkanApp {
         sStagingPtr[j * params.nElementsX + i] = c32{dis(gen), dis(gen)};
       }
     }
+    // c32* sStagingPtr = reinterpret_cast<c32*>(staging.aInfo.pMappedData);
+    // for (uint32_t j = 0; j < nElementsY; j++) {
+    //   float y = (float)j * dY + startY;
+    //   for (uint32_t i = 0; i < nElementsX; i++) {
+    //     float x = (float)i * dX + startX;
+    //     sStagingPtr[j * params.nElementsX + i] = c32{-x * x - y * y, 0};
+    //   }
+    // }
 
     copyBuffers(staging.buffer, computeBuffers[0].buffer,
                 params.elementsTotal() * sizeof(c32));
@@ -268,8 +273,8 @@ struct VulkanApp {
       for (uint32_t i = 0; i < nElementsX; i++) {
         float x = (float)i * dX + startX;
         fStagingPtr[j * nElementsX + i] =
-            p * (pumpProfile(x - 13., y, l, r, beta) +
-                 pumpProfile(x + 13., y, l, r, beta));
+            p * (pumpProfile(x - 12.2, y, l, r, beta) +
+                 pumpProfile(x + 12.2, y, l, r, beta));
       }
     }
     copyBuffers(staging.buffer, computeBuffers[4].buffer,
@@ -379,12 +384,13 @@ struct VulkanApp {
     device.updateDescriptorSets(writeDescriptorSets, {});
   }
 
-  std::vector<c32> outputPsi(uint32_t n) {
-    c32* sStagingPtr = reinterpret_cast<c32*>(staging.aInfo.pMappedData);
+  template <typename T>
+  std::vector<T> outputBuffer(uint32_t n) {
+    T* sStagingPtr = reinterpret_cast<T*>(staging.aInfo.pMappedData);
     copyBuffers(computeBuffers[n].buffer, staging.buffer,
-                params.elementsTotal() * sizeof(c32));
-    std::vector<c32> retVec(params.elementsTotal());
-    memcpy(retVec.data(), sStagingPtr, params.elementsTotal() * sizeof(c32));
+                computeBuffers[n].aInfo.size);
+    std::vector<T> retVec(params.elementsTotal());
+    memcpy(retVec.data(), sStagingPtr, computeBuffers[n].aInfo.size);
     return std::move(retVec);
   }
 
@@ -413,35 +419,59 @@ struct VulkanApp {
   }
 };
 
+void updateImage(cv::Mat& img, cv::Mat& out_img, VulkanApp& GPEsim) {
+  std::cout << "Running updateImage\n";
+  GPEsim.runSim(1);
+  auto psiR = GPEsim.outputBuffer<c32>(0);
+  std::vector<float> a(GPEsim.params.elementsTotal());
+  std::transform(psiR.begin(), psiR.end(), a.begin(),
+                 [](c32 x) { return square(x.real()) + square(x.imag()); });
+  auto max = *std::max_element(a.begin(), a.end());
+  std::cout << "{\'psisqmax\': " << max << ", ";
+  auto maxinv = 1 / max;
+  std::transform(a.begin(), a.end(), img.begin<char>(),
+                 [&](float x) { return static_cast<char>(x * maxinv * 256); });
+  psiR = GPEsim.outputBuffer<c32>(1);
+  std::transform(psiR.begin(), psiR.end(), a.begin(),
+                 [](c32 x) { return square(x.real()) + square(x.imag()); });
+  max = *std::max_element(a.begin(), a.end());
+  std::cout << "\'kTimeEvoMax\': " << max << ", ";
+  a = GPEsim.outputBuffer<float>(3);
+  max = *std::max_element(a.begin(), a.end());
+  std::cout << "\'nRMax\': " << max << "}" << std::endl;
+  cv::applyColorMap(img, out_img, cv::COLORMAP_VIRIDIS);
+}
+
 int main(int argc, char* argv[]) {
   cxxopts::Options options(appName,
                            "Vulkan simulation of Gross-Pitaevskii equation");
   options.add_options()("n,nsteps", "Number of steps to take",
                         cxxopts::value<uint32_t>())(
-      "d,debug", "look at k vectors", cxxopts::value<bool>());
+      "d,debug", "step through simulation one step at a time",
+      cxxopts::value<bool>())("k,kout", "look at time evolution operator",
+                              cxxopts::value<bool>());
   auto result = options.parse(argc, argv);
   if (result.count("n")) {
-    VulkanApp GPEsim(
-        {nElementsX, nElementsY, 2, 2, alpha, gammalp, Gamma, G, R, eta, dt});
+    VulkanApp GPEsim({nElementsX, nElementsY, xGroupSize, yGroupSize, alpha,
+                      gammalp, Gamma, G, R, eta, dt});
     std::cout << "Initialized GPE fine\n";
     GPEsim.initBuffers();
     std::cout << "Uploaded data\n";
     auto n = result["n"].as<uint32_t>();
-    GPEsim.runSim(n);
-    auto psiR = GPEsim.outputPsi(0);
-    std::vector<float> a(GPEsim.params.elementsTotal());
-    std::transform(psiR.begin(), psiR.end(), a.begin(), [](c32 x) {
-      return x.imag() * x.imag() + x.real() * x.real();
-    });
     cv::Mat img(nElementsX, nElementsY, CV_8UC1);
-    const auto max = *std::max_element(a.begin(), a.end());
+    cv::Mat out_img(nElementsX, nElementsY, CV_8UC3);
+    GPEsim.runSim(n);
+    auto psiR = GPEsim.outputBuffer<c32>(0);
+    std::vector<float> a(GPEsim.params.elementsTotal());
+    std::transform(psiR.begin(), psiR.end(), a.begin(),
+                   [](c32 x) { return square(x.real()) + square(x.imag()); });
+    auto max = *std::max_element(a.begin(), a.end());
     std::cout << max << '\n';
-    const auto maxinv = 1 / max;
+    auto maxinv = 1 / max;
     std::transform(a.begin(), a.end(), img.begin<char>(), [&](float x) {
       return static_cast<char>(x * maxinv * 256);
     });
-    cv::Mat out_img;
-    cv::applyColorMap(img, out_img, cv::COLORMAP_BONE);
+    cv::applyColorMap(img, out_img, cv::COLORMAP_VIRIDIS);
     cv::imshow("Display window", out_img);
     int k = cv::waitKey(0);
 
@@ -449,9 +479,60 @@ int main(int argc, char* argv[]) {
       cv::imwrite("aaa", out_img);
     }
   } else if (result.count("d")) {
-    VulkanApp GPEsim(
-        {nElementsX, nElementsY, 2, 2, alpha, gammalp, Gamma, G, R, eta, dt});
+    VulkanApp GPEsim({nElementsX, nElementsY, xGroupSize, yGroupSize, alpha,
+                      gammalp, Gamma, G, R, eta, dt});
+    std::cout << "Initialized GPE fine\n";
+    GPEsim.initBuffers();
+    std::cout << "Uploaded data\n";
+    cv::Mat img(nElementsX, nElementsY, CV_8UC1);
+    cv::Mat out_img(nElementsX, nElementsY, CV_8UC3);
+    auto psiR = GPEsim.outputBuffer<c32>(0);
+    std::vector<float> a(GPEsim.params.elementsTotal());
+    std::transform(psiR.begin(), psiR.end(), a.begin(),
+                   [](c32 x) { return square(x.real()) + square(x.imag()); });
+    auto max = *std::max_element(a.begin(), a.end());
+    std::cout << max << '\n';
+    auto maxinv = 1 / max;
+    std::transform(a.begin(), a.end(), img.begin<char>(), [&](float x) {
+      return static_cast<char>(x * maxinv * 256);
+    });
+    cv::applyColorMap(img, out_img, cv::COLORMAP_VIRIDIS);
+    cv::imshow("Display window", out_img);
+    int k = cv::waitKey(0);
+
+    while (k == 'n') {
+      updateImage(img, out_img, GPEsim);
+      cv::imshow("Display window", out_img);
+      k = cv::waitKey(0);
+    }
     return 0;
+  } else if (result.count("k")) {
+    std::vector<c32> vec(nElementsX * nElementsY);
+    for (uint32_t j = 0; j < nElementsY; j++) {
+      float kY = (float)fftshiftidx(j, nElementsY) * dKy + startKy;
+      for (uint32_t i = 0; i < nElementsX; i++) {
+        float kX = (float)fftshiftidx(i, nElementsX) * dKx + startKx;
+        vec[j * nElementsX + i] =
+            std::exp(c32{0., -(0.5f * hbar * dt / m) * (kY * kY + kX * kX)});
+      }
+    }
+    cv::Mat img(nElementsX, nElementsY, CV_8UC1);
+    cv::Mat out_img(nElementsX, nElementsY, CV_8UC3);
+    std::vector<float> a(nElementsY * nElementsX);
+    std::transform(vec.begin(), vec.end(), a.begin(),
+                   [](c32 x) { return x.real(); });
+    auto max = *std::max_element(a.begin(), a.end());
+    auto min = *std::min_element(a.begin(), a.end());
+    auto normfactor = 1 / (max - min);
+    std::transform(a.begin(), a.end(), img.begin<char>(), [&](float x) {
+      return static_cast<char>((x - min) * normfactor * 256.);
+    });
+    cv::applyColorMap(img, out_img, cv::COLORMAP_VIRIDIS);
+    cv::imshow("Display window", out_img);
+    int k = cv::waitKey(0);
+    if (k == 'q') {
+      return 0;
+    }
   } else {
     throw std::runtime_error("gib n\n");
   }
