@@ -4,3 +4,4 @@ compile_commands.json
 log.txt
 err.txt
 env/
+*.json
