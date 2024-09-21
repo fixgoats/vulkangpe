@@ -84,7 +84,7 @@ struct VulkanApp {
   vk::DescriptorPool descriptorPool;
   vk::CommandPool commandPool;
   vk::CommandBuffer commandBuffer;
-  VkFFTConfiguration conf;
+  VkFFTConfiguration conf{};
   VkFFTApplication app{};
 
   std::random_device rd;
