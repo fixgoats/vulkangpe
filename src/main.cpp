@@ -1,5 +1,6 @@
 #include "hack.hpp"
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -445,6 +446,7 @@ int main(int argc, char* argv[]) {
                               cxxopts::value<bool>());
   auto result = options.parse(argc, argv);
   if (result.count("n")) {
+    auto start = std::chrono::high_resolution_clock::now();
     VulkanApp GPEsim({nElementsX, nElementsY, xGroupSize, yGroupSize, alpha,
                       gammalp, Gamma, G, R, eta, dt});
     std::cout << "Initialized GPE fine\n";
@@ -464,23 +466,18 @@ int main(int argc, char* argv[]) {
     std::transform(psiR.begin(), psiR.end(), a.begin(),
                    [](c32 x) { return square(x.real()) + square(x.imag()); });
     max = *std::max_element(a.begin(), a.end());
-    std::cout << max << '\n';
-    psiR = GPEsim.outputBuffer<c32>(0);
-    std::transform(psiR.begin(), psiR.end(), a.begin(),
-                   [](c32 x) { return square(x.real()) + square(x.imag()); });
-    max = *std::max_element(a.begin(), a.end());
-    std::cout << max << '\n';
     auto maxinv = 1 / max;
     std::transform(a.begin(), a.end(), img.begin<char>(), [&](float x) {
       return static_cast<char>(x * maxinv * 256);
     });
     cv::applyColorMap(img, out_img, cv::COLORMAP_VIRIDIS);
     cv::imshow("Display window", out_img);
+    auto stop = std::chrono::high_resolution_clock::now();
+    auto duration =
+        std::chrono::duration_cast<std::chrono::milliseconds>(stop - start);
+    std::cout << duration.count() << '\n';
     int k = cv::waitKey(0);
 
-    if (k == 's') {
-      cv::imwrite("aaa", out_img);
-    }
   } else if (result.count("d")) {
     VulkanApp GPEsim({nElementsX, nElementsY, xGroupSize, yGroupSize, alpha,
                       gammalp, Gamma, G, R, eta, dt});
@@ -536,6 +533,7 @@ int main(int argc, char* argv[]) {
     if (k == 'q') {
       return 0;
     }
+    * /
   } else {
     throw std::runtime_error("gib n\n");
   }
