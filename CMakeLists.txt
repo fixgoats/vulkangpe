@@ -1,8 +1,28 @@
 cmake_minimum_required(VERSION 3.24)
 
 project(VulkanCompute)
-set(SOURCES src/main.cpp src/vkhelpers.cpp)
-add_executable(VulkanCompute ${SOURCES})
+
+set(CMAKE_AUTOUIC ON)
+set(CMAKE_AUTOMOC ON)
+set(CMAKE_AUTORCC ON)
+
+find_package(QT NAMES Qt6 REQUIRED COMPONENTS Widgets)
+find_package(Qt6 REQUIRED COMPONENTS Widgets)
+
+set(PROJECT_SOURCES
+        src/main.cpp
+        src/vkhelpers.cpp
+        src/mainwindow.cpp
+        src/mainwindow.ui
+        src/GPEsim.cpp
+        include/mainwindow.h
+)
+
+qt_add_executable(VulkanCompute
+    MANUAL_FINALIZATION
+    ${PROJECT_SOURCES}
+)
+
 target_include_directories(VulkanCompute PRIVATE include)
 set_property(TARGET VulkanCompute PROPERTY CXX_STANDARD 20)
 set(VKFFT_BACKEND 0 CACHE STRING "0 - Vulkan, 1 - CUDA, 2 - HIP, 3 - OpenCL, 4 - Level Zero, 5 - Metal")
@@ -37,4 +57,5 @@ endif()
 install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/vkFFT/" DESTINATION include)
 install(TARGETS ${PROJECT_NAME} DESTINATION bin)
 target_precompile_headers(VulkanCompute PRIVATE include/hack.hpp)
-target_link_libraries(VulkanCompute PRIVATE SPIRV glslang Vulkan::Vulkan GPUOpen::VulkanMemoryAllocator VkFFT ${OpenCV_LIBS})
+target_link_libraries(VulkanCompute PRIVATE SPIRV glslang Vulkan::Vulkan GPUOpen::VulkanMemoryAllocator VkFFT Qt6::Widgets ${OpenCV_LIBS})
+qt_finalize_executable(VulkanCompute)
