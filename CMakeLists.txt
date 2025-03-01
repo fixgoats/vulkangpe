@@ -5,28 +5,20 @@ project(VulkanCompute)
 set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
+set(CMAKE_C_STANDARD 99)
 
-find_package(QT NAMES Qt6 REQUIRED COMPONENTS Widgets)
-find_package(Qt6 REQUIRED COMPONENTS Widgets)
 
 set(PROJECT_SOURCES
         src/main.cpp
-        src/vkhelpers.cpp
-        src/mainwindow.cpp
-        src/mainwindow.ui
-        src/GPEsim.cpp
-        include/mainwindow.h
+        src/vkcore.cpp
 )
+set(MAIN_TARGET VulkanCompute)
 
-qt_add_executable(VulkanCompute
-    MANUAL_FINALIZATION
-    ${PROJECT_SOURCES}
-)
+add_executable(${MAIN_TARGET})
+target_sources(${MAIN_TARGET} PRIVATE ${PROJECT_SOURCES})
 
-target_include_directories(VulkanCompute PRIVATE include)
-set_property(TARGET VulkanCompute PROPERTY CXX_STANDARD 20)
+set_property(TARGET ${MAIN_TARGET} PROPERTY CXX_STANDARD 20)
 set(VKFFT_BACKEND 0 CACHE STRING "0 - Vulkan, 1 - CUDA, 2 - HIP, 3 - OpenCL, 4 - Level Zero, 5 - Metal")
-set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 include(CheckIPOSupported)
 check_ipo_supported(RESULT result OUTPUT output)
 if(NOT CMAKE_BUILD_TYPE)
@@ -36,11 +28,12 @@ endif()
 
 add_definitions(-DVKFFT_BACKEND=${VKFFT_BACKEND})
 target_compile_definitions(VulkanCompute PUBLIC -DVK_API_VERSION=13)
+add_subdirectory(SDL)
+target_include_directories(${MAIN_TARGET} PRIVATE include SDL/include/)
+add_subdirectory(vk-bootstrap)
 
 find_package(Vulkan REQUIRED)
 find_package(glslang REQUIRED)
-find_package(OpenCV REQUIRED)
-include_directories(${OpenCV_INCLUDE_DIRS})
 find_package(VulkanMemoryAllocator CONFIG REQUIRED)
 add_library(VkFFT INTERFACE)
 target_include_directories(VkFFT INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/vkFFT/ /usr/include/glslang/Include)
@@ -48,7 +41,7 @@ target_link_libraries(VkFFT INTERFACE glslang::MachineIndependent glslang::OSDep
 target_compile_definitions(VkFFT INTERFACE -DVKFFT_BACKEND=${VKFFT_BACKEND} -DVKFFT_MAX_FFT_DIMENSIONS=3)
 if(result)
     message(STATUS "Using LTO")
-    set_property(TARGET VulkanCompute PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
+    set_property(TARGET ${MAIN_TARGET} PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
 else()
     message(WARNING "LTO is not supported: ${output}")
 endif()
@@ -56,6 +49,5 @@ endif()
 
 install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/vkFFT/" DESTINATION include)
 install(TARGETS ${PROJECT_NAME} DESTINATION bin)
-target_precompile_headers(VulkanCompute PRIVATE include/hack.hpp)
-target_link_libraries(VulkanCompute PRIVATE SPIRV glslang Vulkan::Vulkan GPUOpen::VulkanMemoryAllocator VkFFT Qt6::Widgets ${OpenCV_LIBS})
-qt_finalize_executable(VulkanCompute)
+target_precompile_headers(${MAIN_TARGET} PRIVATE include/hack.hpp)
+target_link_libraries(${MAIN_TARGET} PRIVATE SPIRV glslang Vulkan::Vulkan GPUOpen::VulkanMemoryAllocator VkFFT SDL3::SDL3 vk-bootstrap::vk-bootstrap)

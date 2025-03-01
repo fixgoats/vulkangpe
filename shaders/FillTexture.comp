@@ -1,0 +1,22 @@
+#version 440
+
+layout(set = 0, binding = 0) buffer Block { float data[640 * 480]; };
+
+layout(set = 1, binding = 0) uniform coherent restrict image2D outImage;
+
+layout(set = 2, binding = 0) uniform ColorMap {
+  vec3 cmap[256];
+  float maximum;
+  float minimum;
+};
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+const float PI = 3.14159265359878;
+
+void main() {
+  ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+  uint idx = uint(coord.y * 640 + coord.x);
+  uint normalval = uint(256 * (data[idx] - minimum) / (maximum - minimum));
+  imageStore(outImage, coord, uvec4(cmap[normalval], 255));
+}

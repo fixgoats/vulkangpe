@@ -1,0 +1,7 @@
+[continuous_dscan]
+frames = 512
+steps_per_frame = 100
+start_d = 17.
+end_d = 20.
+dstep = 0.15
+prep_steps = 8000

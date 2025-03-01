@@ -1,0 +1,364 @@
+#pragma once
+#include "SDL3/SDL.h"
+#include "hack.h"
+#include "mathhelpers.h"
+#include "typedefs.h"
+#include "vkFFT.h"
+#include "vk_mem_alloc.h"
+#include <boost/pfr/core.hpp>
+#include <chrono>
+#include <cstddef>
+#include <format>
+#include <fstream>
+#include <type_traits>
+
+using std::bit_cast;
+
+template <typename T>
+std::vector<T> readFile(const std::string& filename) {
+  std::ifstream file(filename, std::ios::ate | std::ios::binary);
+
+  if (!file.is_open()) {
+    throw std::runtime_error("failed to open file!");
+  }
+
+  size_t fileSize = static_cast<size_t>(file.tellg());
+  std::vector<T> buffer(fileSize / sizeof(T));
+  file.seekg(0);
+  file.read(reinterpret_cast<char*>(buffer.data()), fileSize);
+  file.close();
+  return buffer;
+}
+
+inline std::string tstamp() {
+  auto now = std::chrono::system_clock::now();
+  std::time_t time = std::chrono::system_clock::to_time_t(now);
+  tm local_tm = *localtime(&time);
+  return std::format("{}-{}-{}/{}-{}", local_tm.tm_year - 100,
+                     local_tm.tm_mon + 1, local_tm.tm_mday, local_tm.tm_hour,
+                     local_tm.tm_min);
+}
+
+void saveToFile(std::string fname, const char* buf, size_t size);
+
+constexpr u32 maxFramesInFlight = 2;
+
+struct SimConstants {
+  u32 nElementsX;
+  u32 nElementsY;
+  u32 nElementsZ;
+  u32 xGroupSize;
+  u32 yGroupSize;
+  f32 gamma;
+  f32 Gamma;
+  f32 R;
+  f32 EXY;
+  f32 dt;
+  f32 B0;
+  f32 width;
+  f32 resgamma;
+  f32 Bamp;
+  f32 PRatioMax;
+  u32 substeps;
+  constexpr u32 X() const { return nElementsX / xGroupSize; }
+  constexpr u32 Y() const { return nElementsY / yGroupSize; }
+  constexpr bool validate() const {
+    return (nElementsY % yGroupSize == 0) && (nElementsX % xGroupSize == 0);
+  }
+  constexpr u32 elementsTotal() const { return nElementsX * nElementsY; }
+};
+
+template <auto Start, auto End, auto Inc, class F>
+constexpr void constexpr_for(F&& f) {
+  if constexpr (Start < End) {
+    f(std::integral_constant<decltype(Start), Start>());
+    constexpr_for<Start + Inc, End, Inc>(f);
+  }
+}
+
+// std::ostream& operator<<(std::ostream& os, const SimConstants& obj);
+// std::ofstream& operator<<(std::ofstream& os, const SimConstants& obj);
+
+const vk::MemoryBarrier fullMemoryBarrier(vk::AccessFlagBits::eMemoryWrite,
+                                          vk::AccessFlagBits::eMemoryRead);
+
+struct MetaBuffer {
+  // A buffer + allocation stuff that you generally need to reference when using
+  // vk::Buffers. Also destroys itself automatically.
+  vk::Buffer buffer;
+  VmaAllocator* p_allocator = nullptr;
+  VmaAllocation allocation;
+  VmaAllocationInfo aInfo;
+  MetaBuffer();
+  MetaBuffer(VmaAllocator& allocator, VmaAllocationCreateInfo& allocCreateInfo,
+             vk::BufferCreateInfo& BCI);
+  // To call on default constructed metabuffer
+  void allocate(VmaAllocator& allocator,
+                VmaAllocationCreateInfo& allocCreateInfo,
+                vk::BufferCreateInfo& BCI);
+  ~MetaBuffer();
+};
+
+struct Algorithm {
+  // Never owned
+  vk::Device* p_Device;
+  std::vector<MetaBuffer*> p_Buffer;
+  // Owned
+  vk::DescriptorSetLayout m_DSL;
+  vk::DescriptorPool m_DescriptorPool;
+  vk::DescriptorSet m_DescriptorSet;
+  vk::ShaderModule m_ShaderModule;
+  vk::PipelineLayout m_PipelineLayout;
+  vk::Pipeline m_Pipeline;
+  Algorithm(vk::Device* device, std::vector<MetaBuffer*> buffers,
+            const std::vector<u32>& spirv, const u8* specConsts = nullptr,
+            const u32* sizes = nullptr, size_t nConsts = 0,
+            const u32* pushSizes = nullptr, size_t nPushConstants = 0);
+  ~Algorithm();
+};
+
+struct RaiiVkFFTApp {
+  VkFFTApplication app;
+  ~RaiiVkFFTApp() { deleteVkFFT(&app); }
+};
+
+struct RaiiVkFFTConf {
+  std::vector<u64> bufferSizes;
+  VkFFTConfiguration conf;
+};
+
+static const std::vector<std::string> deviceExtensions = {
+    vk::KHRSwapchainExtensionName};
+
+struct Manager {
+  vk::Instance instance;
+  vk::PhysicalDevice physicalDevice;
+  vk::Device device;
+  vk::Queue queue;
+  vk::Fence fence;
+  vk::SurfaceKHR surface;
+  VmaAllocator allocator;
+  vk::Buffer staging;
+  VmaAllocation stagingAllocation;
+  VmaAllocationInfo stagingInfo;
+  u32 cQFI = UINT32_MAX;
+  u32 gQFI = UINT32_MAX;
+  u32 pQFI = UINT32_MAX;
+  vk::CommandPool commandPool;
+
+  Manager(size_t stagingSize, SDL_Window* window);
+  void finishSetup(size_t stagingSize, vk::SurfaceKHR& surface);
+  // Manager uses a single staging buffer for efficient copies.
+  void copyBuffer(vk::Buffer& srcBuffer, vk::Buffer& dstBuffer, u32 bufferSize);
+  void copyInBatches(vk::Buffer& srcBuffer, vk::Buffer& dstBuffer,
+                     u32 batchSize, u32 numBatches);
+
+  vk::CommandBuffer beginRecord(vk::CommandBufferUsageFlagBits bits = {});
+  void execute(vk::CommandBuffer& b);
+  void executeNoSync(vk::CommandBuffer& b);
+  void queueWaitIdle();
+  void getQueueFamilyIndices(vk::SurfaceKHR& surface);
+  void writeToBuffer(MetaBuffer& buffer, const void* input, size_t size);
+  template <class T>
+  void writeToBuffer(MetaBuffer& buffer, const std::vector<T>& vec) {
+    writeToBuffer(buffer, vec.data(), vec.size() * sizeof(T));
+  }
+  void writeFromBuffer(MetaBuffer& buffer, void* output, size_t size);
+  template <class T>
+  void writeFromBuffer(MetaBuffer& buffer, std::vector<T>& v) {
+    writeFromBuffer(buffer, v.data(), v.size() * sizeof(T));
+  }
+  template <class T>
+  void defaultInitBuffer(MetaBuffer& buffer, u32 nElements) {
+    T* TStagingPtr = bit_cast<T*>(stagingInfo.pMappedData);
+    for (u32 i = 0; i < nElements; i++) {
+      TStagingPtr[i] = {};
+    }
+    copyBuffer(staging, buffer.buffer, nElements * sizeof(T));
+  }
+  template <typename T>
+  MetaBuffer makeRawBuffer(u32 nElements) {
+    vk::BufferCreateInfo bCI{vk::BufferCreateFlags(),
+                             nElements * sizeof(T),
+                             vk::BufferUsageFlagBits::eStorageBuffer |
+                                 vk::BufferUsageFlagBits::eTransferDst |
+                                 vk::BufferUsageFlagBits::eTransferSrc,
+                             vk::SharingMode::eExclusive,
+                             1,
+                             &cQFI};
+    VmaAllocationCreateInfo allocCreateInfo{};
+    allocCreateInfo.usage = VMA_MEMORY_USAGE_AUTO;
+    allocCreateInfo.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
+    allocCreateInfo.priority = 1.0f;
+    return MetaBuffer{allocator, allocCreateInfo, bCI};
+  }
+  template <typename T>
+  MetaBuffer makeUniformObject(T obj) {
+    vk::BufferCreateInfo bCI{vk::BufferCreateFlags(),
+                             sizeof(T),
+                             vk::BufferUsageFlagBits::eUniformBuffer |
+                                 vk::BufferUsageFlagBits::eTransferDst |
+                                 vk::BufferUsageFlagBits::eTransferSrc,
+                             vk::SharingMode::eExclusive,
+                             1,
+                             &cQFI};
+    VmaAllocationCreateInfo allocCreateInfo{};
+    allocCreateInfo.usage = VMA_MEMORY_USAGE_AUTO;
+    allocCreateInfo.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
+    allocCreateInfo.priority = 1.0f;
+    return MetaBuffer{allocator, allocCreateInfo, bCI};
+  }
+
+  void freeCommandBuffer(vk::CommandBuffer& b) {
+    device.freeCommandBuffers(commandPool, 1, &b);
+  }
+
+  void freeCommandBuffers(vk::CommandBuffer* b, u32 n) {
+    device.freeCommandBuffers(commandPool, n, b);
+  }
+
+  template <typename T>
+  MetaBuffer vecToBuffer(const std::vector<T>& v) {
+    auto buffer = makeRawBuffer<T>(v.size());
+    writeToBuffer(buffer, v);
+    return buffer;
+  }
+  Algorithm makeAlgorithmRaw(std::string spirvname,
+                             std::vector<MetaBuffer*> buffers,
+                             const u8* specConsts = nullptr,
+                             const u32* specConstOffsets = nullptr,
+                             size_t nConsts = 0, const u32* pushSizes = nullptr,
+                             size_t nPushConstants = 0);
+  template <class T>
+  Algorithm makeAlgorithm(std::string spirvname,
+                          std::vector<MetaBuffer*> buffers,
+                          const T& specConsts) {
+    constexpr size_t nSpecConsts = boost::pfr::tuple_size_v<T>;
+    std::array<u32, nSpecConsts> sizes;
+    constexpr_for<0, nSpecConsts, 1>([&sizes](auto i) {
+      sizes[i] = sizeof(boost::pfr::tuple_element_t<i, SimConstants>);
+    });
+    std::cout << "Detected " << nSpecConsts << " specialization constants.";
+    return makeAlgorithmRaw(spirvname, buffers,
+                            bit_cast<const u8*>(&specConsts), sizes.data(),
+                            sizes.size());
+  }
+  template <class PushType, class T>
+  Algorithm makeAlgorithm(std::string spirvname,
+                          std::vector<MetaBuffer*> buffers,
+                          const T& specConsts) {
+    constexpr size_t nSpecConsts = boost::pfr::tuple_size_v<T>;
+    std::array<u32, nSpecConsts> sizes;
+    constexpr_for<0, nSpecConsts, 1>([&sizes](auto i) {
+      sizes[i] = sizeof(boost::pfr::tuple_element_t<i, SimConstants>);
+    });
+    constexpr size_t nPushConsts = boost::pfr::tuple_size_v<PushType>;
+    std::array<u32, nPushConsts> pushSizes;
+    constexpr_for<0, nPushConsts, 1>([&pushSizes](auto i) {
+      pushSizes[i] = sizeof(boost::pfr::tuple_element_t<i, PushType>);
+    });
+    return makeAlgorithmRaw(spirvname, buffers,
+                            bit_cast<const u8*>(&specConsts), sizes.data(),
+                            sizes.size(), pushSizes.data(), pushSizes.size());
+  }
+  RaiiVkFFTConf makeFFTConf(const MetaBuffer& buffer, std::array<u32, 3> dims,
+                            u32 numberBatches = 1) {
+    RaiiVkFFTConf ret{};
+    ret.conf.device = ((VkDevice*)&device);
+    ret.conf.FFTdim = 1 + dims[1] > 1 ? 1 : 0 + dims[2] > 1 ? 1 : 0;
+    ret.conf.size[0] = dims[0];
+    ret.conf.size[1] = dims[1];
+    ret.conf.size[2] = dims[2];
+    ret.conf.numberBatches = numberBatches;
+    ret.conf.physicalDevice = (VkPhysicalDevice*)&physicalDevice;
+    ret.conf.queue = (VkQueue*)&queue;
+    ret.conf.commandPool = (VkCommandPool*)&commandPool;
+    ret.conf.fence = (VkFence*)&fence;
+    ret.conf.buffer = (VkBuffer*)&buffer.buffer;
+    ret.bufferSizes = {buffer.aInfo.size};
+    ret.conf.bufferSize = ret.bufferSizes.data();
+    return ret;
+  }
+  ~Manager();
+};
+
+struct Renderer {
+  // non-owned
+  Manager* mgr;
+  SDL_Window* window;
+  // owned
+  vk::SurfaceKHR surface;
+  vk::RenderPass renderPass;
+  vk::Pipeline graphicsPipeline;
+  vk::PipelineLayout graphicsPipelineLayout;
+  vk::SwapchainKHR swapChain;
+  std::vector<vk::Framebuffer> swapChainFrameBuffers;
+  std::vector<vk::Image> swapChainImages;
+  vk::Format swapChainImageFormat;
+  vk::Extent2D swapChainExtent;
+  vk::Queue graphicsQueue;
+  vk::Queue presentQueue;
+  std::vector<vk::ImageView> swapChainImageViews;
+  std::vector<vk::Semaphore> imageAvailableSemaphores;
+  std::vector<vk::Semaphore> renderFinishedSemaphores;
+  std::vector<vk::Fence> inFlightFences;
+  std::vector<vk::CommandBuffer> commandBuffers;
+  MetaBuffer vertexBuffer;
+  vk::DescriptorSetLayout descriptorSetLayout;
+  vk::DescriptorPool descriptorPool;
+  vk::DescriptorSet descriptorSet;
+  bool frameBufferResized;
+  u32 currentFrame = 0;
+  Renderer();
+  void cleanupSwapchain();
+  void createGraphicsPipeline();
+  void recreateSwapchain();
+  void createSwapChain(const vk::SwapchainKHR& oldSwapChain);
+  void recordCommandBuffer(vk::CommandBuffer& cB, u32 imageIndex);
+  void drawFrame();
+  ~Renderer();
+};
+
+template <class T>
+void writeCsv(std::ofstream& of, T* v, u32 nColumns, u32 nRows = 1,
+              const std::vector<std::string>& heading = {}) {
+  std::string out;
+  if (heading.size()) {
+    for (const auto& h : heading) {
+      of << h << ' ';
+    }
+    of << '\n';
+  }
+  for (u32 j = 0; j < nRows; j++) {
+    for (u32 i = 0; i < nColumns; i++) {
+      of << numfmt(v[j * nColumns + i]) << ' ';
+    }
+    of << '\n';
+  }
+  of.close();
+}
+
+std::vector<u32> readFile(const std::string& filename);
+vk::PhysicalDevice pickPhysicalDevice(const vk::Instance& instance,
+                                      const s32 desiredGPU = -1);
+
+template <typename Func>
+void oneTimeSubmit(const vk::Device& device, const vk::CommandPool& commandPool,
+                   const vk::Queue& queue, const Func& func) {
+  vk::CommandBuffer commandBuffer =
+      device
+          .allocateCommandBuffers(
+              {commandPool, vk::CommandBufferLevel::ePrimary, 1})
+          .front();
+  commandBuffer.begin(vk::CommandBufferBeginInfo(
+      vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
+  func(commandBuffer);
+  commandBuffer.end();
+  vk::SubmitInfo submitInfo(nullptr, nullptr, commandBuffer);
+  queue.submit(submitInfo, nullptr);
+  queue.waitIdle();
+}
+
+void appendOp(vk::CommandBuffer& b, Algorithm& a, u32 X, u32 Y, u32 Z);
+void appendOpNoBarrier(vk::CommandBuffer& b, Algorithm& a, u32 X, u32 Y = 1,
+                       u32 Z = 1);

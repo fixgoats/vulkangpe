@@ -7,7 +7,6 @@
 
 static const std::string appName{"Vulkan GPE Simulator"};
 
-constexpr float hbar = 6.582119569e-1;
 constexpr uint32_t nElementsX = 512;
 constexpr uint32_t nElementsY = 512;
 constexpr uint32_t xGroupSize = 16;

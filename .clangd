@@ -1,0 +1,6 @@
+"clangd.arguments": [
+  "--header-insertion=never",
+  "-pretty",
+  "--completion-style=detailed",
+  "--clang-tidy",
+]

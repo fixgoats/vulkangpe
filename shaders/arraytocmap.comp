@@ -1,0 +1,24 @@
+#version 440
+
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+layout(std430, binding = 0) buffer Source { vec2 data[]; }
+system;
+layout(binding = 1) uniform ColorMap {
+  uvec3 data[256];
+  float range;
+  float start;
+}
+cmap;
+layout(binding = 2, rgba8) uniform image2D Map;
+layout(constant_id = 0) const uint nElementsX = 512;
+
+uint valueToColor(float x) { return uint(256 * (x - cmap.start) / cmap.range); }
+
+void main() {
+  uint i = gl_GlobalInvocationID.x;
+  uint j = gl_GlobalInvocationID.y;
+
+  uint idx = nElementsX * j + i;
+  uvec3 rgbval = cmap.data[valueToColor(length(system.data[idx]))];
+  imageStore(Map, ivec2(i, j), uvec4(rgbval, 255));
+}
