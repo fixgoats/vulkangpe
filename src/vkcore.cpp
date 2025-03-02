@@ -699,7 +699,7 @@ EShLanguage translateShaderStage(vk::ShaderStageFlagBits stage) {
   }
 }
 
-bool GLSLtoSPV(const vk::ShaderStageFlagBits shaderType,
+/*bool GLSLtoSPV(const vk::ShaderStageFlagBits shaderType,
                std::string const& glslShader,
                std::vector<unsigned int>& spvShader) {
   EShLanguage stage = translateShaderStage(shaderType);
@@ -757,7 +757,7 @@ void Renderer::createGraphicsPipeline() {
       createShaderModule(mgr->device, vk::ShaderStageFlagBits::eFragment, "");
 
   glslang::FinalizeProcess();
-}
+}*/
 
 Renderer::~Renderer() {
   vk::Device& dev = mgr->device;
