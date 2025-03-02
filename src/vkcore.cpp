@@ -4,11 +4,8 @@
 #include <format>
 #include <vulkan/vulkan.hpp>
 #include <vulkan/vulkan_handles.hpp>
-#define VMA_IMPLEMENTATION
+#define VMA_IMPLEMENTATION 1003000
 #include "SDL3/SDL_vulkan.h"
-#include "glslang/Public/ResourceLimits.h"
-#include "glslang/Public/ShaderLang.h"
-#include "glslang/SPIRV/GlslangToSpv.h"
 #include "vk_mem_alloc.h"
 #include "vkcore.h"
 #include <cstdint>
@@ -27,7 +24,6 @@ MetaBuffer::MetaBuffer(VmaAllocator& allocator,
   buffer = vk::Buffer{};
   allocation = VmaAllocation{};
   aInfo = VmaAllocationInfo{};
-  p_allocator = &allocator;
   vmaCreateBuffer(allocator, reinterpret_cast<VkBufferCreateInfo*>(&BCI),
                   &allocCreateInfo, reinterpret_cast<VkBuffer*>(&buffer),
                   &allocation, &aInfo);
@@ -36,14 +32,9 @@ MetaBuffer::MetaBuffer(VmaAllocator& allocator,
 void MetaBuffer::allocate(VmaAllocator& allocator,
                           VmaAllocationCreateInfo& allocCreateInfo,
                           vk::BufferCreateInfo& BCI) {
-  p_allocator = &allocator;
   vmaCreateBuffer(allocator, reinterpret_cast<VkBufferCreateInfo*>(&BCI),
                   &allocCreateInfo, reinterpret_cast<VkBuffer*>(&buffer),
                   &allocation, &aInfo);
-}
-
-MetaBuffer::~MetaBuffer() {
-  vmaDestroyBuffer(*p_allocator, buffer, allocation);
 }
 
 Algorithm::Algorithm(vk::Device* device, std::vector<MetaBuffer*> buffers,
@@ -662,102 +653,6 @@ void Renderer::drawFrame() {
 
   currentFrame = (currentFrame + 1) % maxFramesInFlight;
 }
-
-EShLanguage translateShaderStage(vk::ShaderStageFlagBits stage) {
-  switch (stage) {
-  case vk::ShaderStageFlagBits::eVertex:
-    return EShLangVertex;
-  case vk::ShaderStageFlagBits::eTessellationControl:
-    return EShLangTessControl;
-  case vk::ShaderStageFlagBits::eTessellationEvaluation:
-    return EShLangTessEvaluation;
-  case vk::ShaderStageFlagBits::eGeometry:
-    return EShLangGeometry;
-  case vk::ShaderStageFlagBits::eFragment:
-    return EShLangFragment;
-  case vk::ShaderStageFlagBits::eCompute:
-    return EShLangCompute;
-  case vk::ShaderStageFlagBits::eRaygenNV:
-    return EShLangRayGenNV;
-  case vk::ShaderStageFlagBits::eAnyHitNV:
-    return EShLangAnyHitNV;
-  case vk::ShaderStageFlagBits::eClosestHitNV:
-    return EShLangClosestHitNV;
-  case vk::ShaderStageFlagBits::eMissNV:
-    return EShLangMissNV;
-  case vk::ShaderStageFlagBits::eIntersectionNV:
-    return EShLangIntersectNV;
-  case vk::ShaderStageFlagBits::eCallableNV:
-    return EShLangCallableNV;
-  case vk::ShaderStageFlagBits::eTaskNV:
-    return EShLangTaskNV;
-  case vk::ShaderStageFlagBits::eMeshNV:
-    return EShLangMeshNV;
-  default:
-    assert(false && "Unknown shader stage");
-    return EShLangVertex;
-  }
-}
-
-/*bool GLSLtoSPV(const vk::ShaderStageFlagBits shaderType,
-               std::string const& glslShader,
-               std::vector<unsigned int>& spvShader) {
-  EShLanguage stage = translateShaderStage(shaderType);
-
-  const char* shaderStrings[1];
-  shaderStrings[0] = glslShader.data();
-
-  glslang::TShader shader(stage);
-  shader.setStrings(shaderStrings, 1);
-
-  // Enable SPIR-V and Vulkan rules when parsing GLSL
-  EShMessages messages = (EShMessages)(EShMsgSpvRules | EShMsgVulkanRules);
-
-  if (!shader.parse(GetDefaultResources(), 100, false, messages)) {
-    puts(shader.getInfoLog());
-    puts(shader.getInfoDebugLog());
-    return false; // something didn't work
-  }
-
-  glslang::TProgram program;
-  program.addShader(&shader);
-
-  //
-  // Program-level processing...
-  //
-
-  if (!program.link(messages)) {
-    puts(shader.getInfoLog());
-    puts(shader.getInfoDebugLog());
-    fflush(stdout);
-    return false;
-  }
-
-  glslang::GlslangToSpv(*program.getIntermediate(stage), spvShader);
-  return true;
-}
-
-vk::ShaderModule createShaderModule(vk::Device const& device,
-                                    vk::ShaderStageFlagBits shaderStage,
-                                    std::string const& shaderText) {
-  std::vector<u32> shaderSPV;
-  if (!GLSLtoSPV(shaderStage, shaderText, shaderSPV)) {
-    throw std::runtime_error(
-        "Could not convert glsl shader to spir-v -> terminating");
-  }
-
-  return device.createShaderModule(
-      vk::ShaderModuleCreateInfo(vk::ShaderModuleCreateFlags(), shaderSPV));
-}
-void Renderer::createGraphicsPipeline() {
-  glslang::InitializeProcess();
-  auto vertexShaderModule =
-      createShaderModule(mgr->device, vk::ShaderStageFlagBits::eVertex, "");
-  auto fragShaderModule =
-      createShaderModule(mgr->device, vk::ShaderStageFlagBits::eFragment, "");
-
-  glslang::FinalizeProcess();
-}*/
 
 Renderer::~Renderer() {
   vk::Device& dev = mgr->device;

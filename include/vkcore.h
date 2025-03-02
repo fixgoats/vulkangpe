@@ -86,7 +86,6 @@ struct MetaBuffer {
   // A buffer + allocation stuff that you generally need to reference when using
   // vk::Buffers. Also destroys itself automatically.
   vk::Buffer buffer;
-  VmaAllocator* p_allocator = nullptr;
   VmaAllocation allocation;
   VmaAllocationInfo aInfo;
   MetaBuffer();
@@ -96,7 +95,6 @@ struct MetaBuffer {
   void allocate(VmaAllocator& allocator,
                 VmaAllocationCreateInfo& allocCreateInfo,
                 vk::BufferCreateInfo& BCI);
-  ~MetaBuffer();
 };
 
 struct Algorithm {
