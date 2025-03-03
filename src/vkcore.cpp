@@ -37,6 +37,31 @@ void MetaBuffer::allocate(VmaAllocator& allocator,
                   &allocation, &aInfo);
 }
 
+AllocatedImage::AllocatedImage() {
+  img = vk::Image{};
+  allocation = VmaAllocation{};
+  aInfo = VmaAllocationInfo{};
+}
+
+AllocatedImage::AllocatedImage(VmaAllocator& allocator,
+                               VmaAllocationCreateInfo& allocCreateInfo,
+                               vk::ImageCreateInfo& BCI) {
+  img = vk::Image{};
+  allocation = VmaAllocation{};
+  aInfo = VmaAllocationInfo{};
+  vmaCreateImage(allocator, reinterpret_cast<VkImageCreateInfo*>(&BCI),
+                 &allocCreateInfo, reinterpret_cast<VkImage*>(&img),
+                 &allocation, &aInfo);
+}
+
+void AllocatedImage::allocate(VmaAllocator& allocator,
+                              VmaAllocationCreateInfo& allocCreateInfo,
+                              vk::ImageCreateInfo& BCI) {
+  vmaCreateImage(allocator, reinterpret_cast<VkImageCreateInfo*>(&BCI),
+                 &allocCreateInfo, reinterpret_cast<VkImage*>(&img),
+                 &allocation, &aInfo);
+}
+
 Algorithm::Algorithm(vk::Device* device, std::vector<MetaBuffer*> buffers,
                      const std::vector<u32>& spirv, const u8* specConsts,
                      const u32* sizes, size_t nConsts, const u32* pushSizes,

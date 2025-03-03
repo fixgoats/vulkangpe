@@ -97,6 +97,19 @@ struct MetaBuffer {
                 vk::BufferCreateInfo& BCI);
 };
 
+struct AllocatedImage {
+  vk::Image img;
+  VmaAllocation allocation;
+  VmaAllocationInfo aInfo;
+  AllocatedImage();
+  AllocatedImage(VmaAllocator& allocator,
+                 VmaAllocationCreateInfo& allocCreateInfo,
+                 vk::ImageCreateInfo& iCI);
+  void allocate(VmaAllocator& allocator,
+                VmaAllocationCreateInfo& allocCreateInfo,
+                vk::ImageCreateInfo& iCI);
+};
+
 struct Algorithm {
   // Never owned
   vk::Device* p_Device;
