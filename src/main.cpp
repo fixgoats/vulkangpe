@@ -12,8 +12,6 @@
 #include "typedefs.h"
 #include "vkcore.h"
 #include <vulkan/vulkan.h>
-#define STB_IMAGE_IMPLEMENTATION
-#include <stb/stb_image.h>
 
 using std::bit_cast;
 
@@ -245,7 +243,7 @@ int device_initialization(Init& init) {
 }
 
 void create_image(Init& init, RenderData& data) {
-  auto format = vk::Format::eR8G8B8A8Srgb;
+  auto format = vk::Format::eR32G32B32A32Sfloat;
   vk::ImageCreateInfo imageInfo{};
   imageInfo.setImageType(vk::ImageType::e2D);
   imageInfo.setExtent({640, 480, 1});
@@ -264,18 +262,18 @@ void create_image(Init& init, RenderData& data) {
   allocCreateInfo.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
   allocCreateInfo.priority = 1.0f;
   data.colormap.allocate(init.allocator, allocCreateInfo, imageInfo);
-  s32 texWidth, texHeight, texChannels;
+  /*s32 texWidth, texHeight, texChannels;
   stbi_uc* pixels = stbi_load("tex640x480.jpg", &texWidth, &texHeight,
-                              &texChannels, STBI_rgb_alpha);
+                              &texChannels, STBI_rgb_alpha);*/
   vk::ImageMemoryBarrier barrier{};
   barrier.setOldLayout(vk::ImageLayout::eUndefined);
-  barrier.setNewLayout(vk::ImageLayout::eTransferDstOptimal);
+  // barrier.setNewLayout(vk::ImageLayout::eTransferDstOptimal);*/
   barrier.setSrcQueueFamilyIndex(vk::QueueFamilyIgnored);
   barrier.setDstQueueFamilyIndex(vk::QueueFamilyIgnored);
   barrier.setImage(data.colormap.img);
   barrier.setSubresourceRange({vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1});
   barrier.setSrcAccessMask({});
-  barrier.setDstAccessMask(vk::AccessFlagBits::eTransferWrite);
+  /*barrier.setDstAccessMask(vk::AccessFlagBits::eTransferWrite);
   oneTimeSubmit(init.device.device, data.command_pool, data.graphics_queue,
                 [&](vk::CommandBuffer b) {
                   b.pipelineBarrier(vk::PipelineStageFlagBits::eTopOfPipe,
@@ -283,10 +281,10 @@ void create_image(Init& init, RenderData& data) {
                                     nullptr, nullptr, barrier);
                 });
   writeToImage(init, pixels, data.colormap, texWidth * texHeight * 4, texWidth,
-               texHeight);
-  barrier.setOldLayout(vk::ImageLayout::eTransferDstOptimal);
+               texHeight);*/
+  // barrier.setOldLayout(vk::ImageLayout::eUndefined);
   barrier.setNewLayout(vk::ImageLayout::eShaderReadOnlyOptimal);
-  barrier.setSrcAccessMask(vk::AccessFlagBits::eTransferWrite);
+  // barrier.setSrcAccessMask(vk::AccessFlagBits::eTransferWrite);
   barrier.setDstAccessMask(vk::AccessFlagBits::eShaderRead);
   oneTimeSubmit(init.device.device, data.command_pool, data.graphics_queue,
                 [&](vk::CommandBuffer b) {
@@ -475,6 +473,7 @@ vk::ShaderModule createShaderModule(Init& init, const std::vector<u32>& code) {
   return static_cast<vk::ShaderModule>(shaderModule);
 }
 
+int create_compute_pipeline(Init& init, RenderData& data) { return 0; }
 int create_graphics_pipeline(Init& init, RenderData& data) {
   std::cout << "reading vertex shader code at " << BasePath
             << "Shaders/triangle.vert.spv\n";
@@ -656,7 +655,6 @@ int create_command_buffers(Init& init, RenderData& data) {
     return -1; // failed to allocate command buffers;
   }
 
-  std::cout << data.command_buffers.size() << '\n';
   for (size_t i = 0; i < data.command_buffers.size(); i++) {
     VkCommandBufferBeginInfo begin_info = {};
     begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -665,7 +663,6 @@ int create_command_buffers(Init& init, RenderData& data) {
         VK_SUCCESS) {
       return -1; // failed to begin recording command buffer
     }
-    std::cout << data.descriptor_set[i] << '\n';
 
     vk::ClearValue clearColor{{1.0f, 1.0f, 1.0f, 1.0f}};
     vk::RenderPassBeginInfo render_pass_info(
