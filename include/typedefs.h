@@ -21,7 +21,7 @@ struct vec4 {
   T x, y, z, w;
 };
 
-template <class T = f32>
+template <class T>
 struct vec3 {
   T x;
   T y;

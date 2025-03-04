@@ -7,27 +7,13 @@
 
 #include "SDL3/SDL.h"
 #include "SDL3/SDL_vulkan.h"
-#include "colormaps.h"
+#include "colormaps.hpp"
 #include "mathhelpers.h"
 #include "typedefs.h"
 #include "vkcore.h"
 #include <vulkan/vulkan.h>
 
 using std::bit_cast;
-
-template <typename T, typename U, typename = void>
-struct is_safely_castable : std::false_type {};
-
-template <typename T, typename U>
-struct is_safely_castable<
-    T, U, std::void_t<decltype(static_cast<U>(std::declval<T>()))>>
-    : std::true_type {};
-
-template <class T, class B>
-T* pcast(B* x) {
-  static_assert(is_safely_castable<T, B>(), "Types are not equivalent");
-  return bit_cast<T*>(x);
-}
 
 struct PositionTextureVertex {
   vec2<f32> pos;
@@ -103,11 +89,6 @@ void writeToImage(Init& init, const void* src, AllocatedImage& dst,
         VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
         VMA_ALLOCATION_CREATE_MAPPED_BIT;
     init.staging.allocate(init.allocator, allocCreateInfo, stagingBCI);
-    /*init.staging.allocation = VmaAllocation{};
-    init.staging.aInfo = VmaAllocationInfo{};
-    vmaCreateBuffer(init.allocator,
-    bit_cast<VkBufferCreateInfo*>(&stagingBCI), &allocCreateInfo,
-    bit_cast<VkBuffer*>(&init.staging), &stagingAllocation, &stagingInfo);*/
   }
 
   memcpy(init.staging.aInfo.pMappedData, src, size);
@@ -126,6 +107,7 @@ struct RenderData {
   vk::RenderPass render_pass;
   vk::PipelineLayout pipeline_layout;
   vk::Pipeline graphics_pipeline;
+  vk::Pipeline colormap_pipeline;
 
   vk::CommandPool command_pool;
   std::vector<vk::CommandBuffer> command_buffers;
@@ -145,6 +127,12 @@ struct RenderData {
   AllocatedImage colormap;
   vk::ImageView colormap_image_view;
   vk::Sampler colormap_sampler;
+  vk::DescriptorSetLayout colormap_dsl;
+  vk::DescriptorSet colormap_descriptor_set;
+  vk::PipelineLayout colormap_pipeline_layout;
+
+  MetaBuffer colormap_index_buffer;
+  MetaBuffer colormap_buffer;
 };
 
 SDL_Window* create_window_sdl(const char* window_name = "", u32 flags = 0) {
@@ -171,7 +159,7 @@ vk::SurfaceKHR create_surface_sdl(VkInstance instance, SDL_Window* window,
 }
 
 int device_initialization(Init& init) {
-  init.window = create_window_sdl("Vulkan Triangle", true);
+  init.window = create_window_sdl("Vulkan Triangle", SDL_WINDOW_RESIZABLE);
 
   vkb::InstanceBuilder instance_builder;
   auto instance_ret = instance_builder.use_default_debug_messenger()
@@ -188,12 +176,12 @@ int device_initialization(Init& init) {
 
   init.surface = create_surface_sdl(init.instance, init.window);
 
-  VkPhysicalDeviceVulkan13Features features{
-      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+  VkPhysicalDeviceVulkan13Features features{};
+  features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
   features.synchronization2 = true;
 
-  VkPhysicalDeviceVulkan12Features features12{
-      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+  VkPhysicalDeviceVulkan12Features features12{};
+  features12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
   features12.bufferDeviceAddress = true;
   features12.descriptorIndexing = true;
   features12.descriptorBindingPartiallyBound = true;
@@ -252,9 +240,8 @@ void create_image(Init& init, RenderData& data) {
   imageInfo.setFormat(format);
   imageInfo.setTiling(vk::ImageTiling::eOptimal);
   imageInfo.setInitialLayout(vk::ImageLayout::eUndefined);
-  imageInfo.setUsage(vk::ImageUsageFlagBits::eTransferDst |
-                     vk::ImageUsageFlagBits::eSampled |
-                     vk::ImageUsageFlagBits::eColorAttachment);
+  imageInfo.setUsage(vk::ImageUsageFlagBits::eSampled |
+                     vk::ImageUsageFlagBits::eStorage);
   imageInfo.setSharingMode(vk::SharingMode::eExclusive);
   imageInfo.setSamples(vk::SampleCountFlagBits::e1);
   VmaAllocationCreateInfo allocCreateInfo{};
@@ -262,34 +249,23 @@ void create_image(Init& init, RenderData& data) {
   allocCreateInfo.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
   allocCreateInfo.priority = 1.0f;
   data.colormap.allocate(init.allocator, allocCreateInfo, imageInfo);
-  /*s32 texWidth, texHeight, texChannels;
-  stbi_uc* pixels = stbi_load("tex640x480.jpg", &texWidth, &texHeight,
-                              &texChannels, STBI_rgb_alpha);*/
+
   vk::ImageMemoryBarrier barrier{};
   barrier.setOldLayout(vk::ImageLayout::eUndefined);
-  // barrier.setNewLayout(vk::ImageLayout::eTransferDstOptimal);*/
+  // On Nvidia there is really only the General image layout. On AMD General is
+  // compressed so you need to switch to a different layout for adequate
+  // performance there
+  barrier.setNewLayout(vk::ImageLayout::eGeneral);
   barrier.setSrcQueueFamilyIndex(vk::QueueFamilyIgnored);
   barrier.setDstQueueFamilyIndex(vk::QueueFamilyIgnored);
   barrier.setImage(data.colormap.img);
   barrier.setSubresourceRange({vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1});
   barrier.setSrcAccessMask({});
-  /*barrier.setDstAccessMask(vk::AccessFlagBits::eTransferWrite);
-  oneTimeSubmit(init.device.device, data.command_pool, data.graphics_queue,
-                [&](vk::CommandBuffer b) {
-                  b.pipelineBarrier(vk::PipelineStageFlagBits::eTopOfPipe,
-                                    vk::PipelineStageFlagBits::eTransfer, {},
-                                    nullptr, nullptr, barrier);
-                });
-  writeToImage(init, pixels, data.colormap, texWidth * texHeight * 4, texWidth,
-               texHeight);*/
-  // barrier.setOldLayout(vk::ImageLayout::eUndefined);
-  barrier.setNewLayout(vk::ImageLayout::eShaderReadOnlyOptimal);
-  // barrier.setSrcAccessMask(vk::AccessFlagBits::eTransferWrite);
   barrier.setDstAccessMask(vk::AccessFlagBits::eShaderRead);
   oneTimeSubmit(init.device.device, data.command_pool, data.graphics_queue,
                 [&](vk::CommandBuffer b) {
                   b.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
-                                    vk::PipelineStageFlagBits::eFragmentShader,
+                                    vk::PipelineStageFlagBits::eComputeShader,
                                     {}, nullptr, nullptr, barrier);
                 });
 
@@ -321,7 +297,7 @@ void create_image(Init& init, RenderData& data) {
                           pcast<VkSampler>(&data.colormap_sampler));
 }
 
-void create_descriptor(Init& init, RenderData& data) {
+int create_descriptor(Init& init, RenderData& data) {
   VkDescriptorSetLayoutBinding binding{};
   binding.binding = 0;
   binding.descriptorCount = 1;
@@ -337,31 +313,48 @@ void create_descriptor(Init& init, RenderData& data) {
       &dsl_info, nullptr,
       pcast<VkDescriptorSetLayout>(&data.descriptor_set_layout));
 
+  std::array<vk::DescriptorSetLayoutBinding, 3> colormap_bindings = {
+      {{0, vk::DescriptorType::eStorageImage, 1,
+        vk::ShaderStageFlagBits::eCompute},
+       {1, vk::DescriptorType::eStorageBuffer, 1,
+        vk::ShaderStageFlagBits::eCompute},
+       {2, vk::DescriptorType::eStorageBuffer, 1,
+        vk::ShaderStageFlagBits::eCompute}}};
+  vk::DescriptorSetLayoutCreateInfo colormap_dsl_info({}, colormap_bindings);
+  init.disp.createDescriptorSetLayout(
+      pcast<VkDescriptorSetLayoutCreateInfo>(&colormap_dsl_info), nullptr,
+      pcast<VkDescriptorSetLayout>(&data.colormap_dsl));
+
   std::vector<vk::DescriptorSetLayout> layouts(
-      init.swapchain.get_image_views().value().size(),
-      data.descriptor_set_layout);
+      data.swapchain_image_views.size(), data.descriptor_set_layout);
 
   VkDescriptorPoolSize pool_size = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                                     MAX_FRAMES_IN_FLIGHT};
 
   VkDescriptorPoolCreateInfo pool_info = {};
   pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-  pool_info.maxSets = layouts.size();
+  pool_info.maxSets = layouts.size() + 1;
   pool_info.poolSizeCount = 1;
   pool_info.pPoolSizes = &pool_size;
   init.disp.createDescriptorPool(
       &pool_info, nullptr, pcast<VkDescriptorPool>(&data.descriptor_pool));
 
-  VkDescriptorSetAllocateInfo ds_allocate_info = {};
   data.descriptor_set.resize(layouts.size());
-  ds_allocate_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-  ds_allocate_info.descriptorPool = data.descriptor_pool;
-  ds_allocate_info.descriptorSetCount = layouts.size();
-  ds_allocate_info.pSetLayouts = pcast<VkDescriptorSetLayout>(layouts.data());
+  vk::DescriptorSetAllocateInfo ds_allocate_info(data.descriptor_pool, layouts);
   if (init.disp.allocateDescriptorSets(
-          &ds_allocate_info,
+          pcast<VkDescriptorSetAllocateInfo>(&ds_allocate_info),
           pcast<VkDescriptorSet>(data.descriptor_set.data())) != VK_SUCCESS) {
-    std::cerr << "Failed to allocate descriptor sets";
+    std::cerr << "Failed to allocate descriptor sets\n";
+    return -1;
+  }
+  vk::DescriptorSetAllocateInfo colormap_dsa(data.descriptor_pool,
+                                             data.colormap_dsl);
+  if (init.disp.allocateDescriptorSets(
+          pcast<VkDescriptorSetAllocateInfo>(&colormap_dsa),
+          pcast<VkDescriptorSet>(&data.colormap_descriptor_set)) !=
+      VK_SUCCESS) {
+    std::cerr << "Failed to allocate colormap descriptor sets\n";
+    return -1;
   }
 
   for (auto& set : data.descriptor_set) {
@@ -370,19 +363,38 @@ void create_descriptor(Init& init, RenderData& data) {
     img_info.setImageView(data.colormap_image_view);
     img_info.setSampler(data.colormap_sampler);
 
-    vk::WriteDescriptorSet writes{};
-    writes.setDstSet(set);
-    writes.setDstBinding(0);
-    writes.setDstArrayElement(0);
-    writes.setDescriptorType(vk::DescriptorType::eCombinedImageSampler);
-    writes.setDescriptorCount(1);
-    writes.setPImageInfo(&img_info);
+    vk::WriteDescriptorSet writes(
+        set, 0, 0, vk::DescriptorType::eCombinedImageSampler, img_info);
     init.disp.updateDescriptorSets(1, pcast<VkWriteDescriptorSet>(&writes), 0,
                                    nullptr);
   }
+  vk::DescriptorImageInfo img_info{};
+  // This may seem a bit strange, but in many drivers ShaderReadOnly is actually
+  // the same layout as TransferDstOptimal, plus the performance hit if it isn't
+  // should mostly be compensated by not having to wait on memory barriers.
+  img_info.setImageLayout(vk::ImageLayout::eGeneral);
+  // Apparently you bind ImageViews instead of images directly?
+  img_info.setImageView(data.colormap_image_view);
+  // No sampler here, I don't think
+  vk::DescriptorBufferInfo colormap_index_info(
+      data.colormap_index_buffer.buffer, 0,
+      data.colormap_index_buffer.aInfo.size);
+  vk::DescriptorBufferInfo colormap_buffer_info(
+      data.colormap_buffer.buffer, 0, data.colormap_buffer.aInfo.size);
+  std::array<vk::WriteDescriptorSet, 3> writes = {
+      {{data.colormap_descriptor_set, 0, 0, vk::DescriptorType::eStorageImage,
+        img_info},
+       {data.colormap_descriptor_set, 1, 0, 1,
+        vk::DescriptorType::eStorageBuffer, nullptr, &colormap_index_info},
+       {data.colormap_descriptor_set, 2, 0, 1,
+        vk::DescriptorType::eStorageBuffer, nullptr, &colormap_buffer_info}}};
+  init.disp.updateDescriptorSets(
+      writes.size(), pcast<VkWriteDescriptorSet>(writes.data()), 0, nullptr);
+
+  return 0;
 }
 
-int create_swapchain(Init& init) {
+int create_swapchain(Init& init, RenderData& data) {
 
   vkb::SwapchainBuilder swapchain_builder{init.device};
   auto swap_ret = swapchain_builder.set_old_swapchain(init.swapchain).build();
@@ -393,6 +405,21 @@ int create_swapchain(Init& init) {
   }
   vkb::destroy_swapchain(init.swapchain);
   init.swapchain = swap_ret.value();
+
+  data.swapchain_images = [](Init& init) {
+    auto tmp = init.swapchain.get_images().value();
+    std::vector<vk::Image> ret(tmp.size());
+    std::transform(tmp.cbegin(), tmp.cend(), ret.begin(),
+                   [](VkImage x) { return static_cast<vk::Image>(x); });
+    return ret;
+  }(init);
+  data.swapchain_image_views = [](Init& init) {
+    auto tmp = init.swapchain.get_image_views().value();
+    std::vector<vk::ImageView> ret(tmp.size());
+    std::transform(tmp.cbegin(), tmp.cend(), ret.begin(),
+                   [](VkImageView x) { return static_cast<vk::ImageView>(x); });
+    return ret;
+  }(init);
   return 0;
 }
 
@@ -473,17 +500,15 @@ vk::ShaderModule createShaderModule(Init& init, const std::vector<u32>& code) {
   return static_cast<vk::ShaderModule>(shaderModule);
 }
 
-int create_compute_pipeline(Init& init, RenderData& data) { return 0; }
-int create_graphics_pipeline(Init& init, RenderData& data) {
-  std::cout << "reading vertex shader code at " << BasePath
-            << "Shaders/triangle.vert.spv\n";
+int create_graphics_pipelines(Init& init, RenderData& data) {
   auto vert_code =
       readFile<u32>(std::string(BasePath) + "Shaders/triangle.vert.spv");
-  std::cout << "reading fragment shader code at " << BasePath
-            << "Shaders/triangle.frag.spv\n";
   auto frag_code =
       readFile<u32>(std::string(BasePath) + "Shaders/triangle.frag.spv");
 
+  auto colormap_code =
+      readFile<u32>(std::string(BasePath) + "Shaders/colormap.comp.spv");
+  vk::ShaderModule colormap_module = createShaderModule(init, colormap_code);
   vk::ShaderModule vert_module = createShaderModule(init, vert_code);
   vk::ShaderModule frag_module = createShaderModule(init, frag_code);
   if (vert_module == VK_NULL_HANDLE || frag_module == VK_NULL_HANDLE) {
@@ -498,6 +523,9 @@ int create_graphics_pipeline(Init& init, RenderData& data) {
   vk::PipelineShaderStageCreateInfo frag_stage_info(
       vk::PipelineShaderStageCreateFlags(), vk::ShaderStageFlagBits::eFragment,
       frag_module, "main");
+  vk::PipelineShaderStageCreateInfo colormap_stage_info(
+      vk::PipelineShaderStageCreateFlags(), vk::ShaderStageFlagBits::eCompute,
+      colormap_module, "main");
 
   vk::PipelineShaderStageCreateInfo shader_stages[] = {vert_stage_info,
                                                        frag_stage_info};
@@ -559,12 +587,22 @@ int create_graphics_pipeline(Init& init, RenderData& data) {
       {{1.0f, 1.0f, 1.0f, 1.0f}}                // blendConstants
   );
 
-  vk::PipelineLayoutCreateInfo pipeline_layout_info{};
-  pipeline_layout_info.setSetLayouts(data.descriptor_set_layout);
+  vk::PipelineLayoutCreateInfo graphics_pipeline_layout_info{};
+  graphics_pipeline_layout_info.setSetLayouts(data.descriptor_set_layout);
+  vk::PipelineLayoutCreateInfo colormap_pipeline_layout_info{};
+  colormap_pipeline_layout_info.setSetLayouts(data.colormap_dsl);
 
   if (init.disp.createPipelineLayout(
-          bit_cast<VkPipelineLayoutCreateInfo*>(&pipeline_layout_info), nullptr,
+          bit_cast<VkPipelineLayoutCreateInfo*>(&graphics_pipeline_layout_info),
+          nullptr,
           bit_cast<VkPipelineLayout*>(&data.pipeline_layout)) != VK_SUCCESS) {
+    std::cout << "failed to create pipeline layout\n";
+    return -1; // failed to create pipeline layout
+  }
+  if (init.disp.createPipelineLayout(
+          pcast<VkPipelineLayoutCreateInfo>(&colormap_pipeline_layout_info),
+          nullptr, pcast<VkPipelineLayout>(&data.colormap_pipeline_layout)) !=
+      VK_SUCCESS) {
     std::cout << "failed to create pipeline layout\n";
     return -1; // failed to create pipeline layout
   }
@@ -580,36 +618,30 @@ int create_graphics_pipeline(Init& init, RenderData& data) {
       &input_assembly, nullptr, &viewport_state, &rasterizer, &multisampling,
       nullptr, &color_blending, &dynamic_info, data.pipeline_layout,
       data.render_pass);
+  vk::ComputePipelineCreateInfo colormap_info({}, colormap_stage_info,
+                                              data.colormap_pipeline_layout);
 
   if (init.disp.createGraphicsPipelines(
           VK_NULL_HANDLE, 1,
-          bit_cast<VkGraphicsPipelineCreateInfo*>(&pipeline_info), nullptr,
-          bit_cast<VkPipeline*>(&data.graphics_pipeline)) != VK_SUCCESS) {
+          pcast<VkGraphicsPipelineCreateInfo>(&pipeline_info), nullptr,
+          pcast<VkPipeline>(&data.graphics_pipeline)) != VK_SUCCESS) {
     std::cout << "failed to create pipline\n";
     return -1; // failed to create graphics pipeline
+  }
+  if (init.disp.createComputePipelines(
+          VK_NULL_HANDLE, 1, pcast<VkComputePipelineCreateInfo>(&colormap_info),
+          nullptr, pcast<VkPipeline>(&data.colormap_pipeline)) != VK_SUCCESS) {
+    std::cerr << "Failed to create colormap pipeline\n";
+    return -1;
   }
 
   init.disp.destroyShaderModule(frag_module, nullptr);
   init.disp.destroyShaderModule(vert_module, nullptr);
+  init.disp.destroyShaderModule(colormap_module, nullptr);
   return 0;
 }
 
 int create_framebuffers(Init& init, RenderData& data) {
-  data.swapchain_images = [](Init& init) {
-    auto tmp = init.swapchain.get_images().value();
-    std::vector<vk::Image> ret(tmp.size());
-    std::transform(tmp.cbegin(), tmp.cend(), ret.begin(),
-                   [](VkImage x) { return static_cast<vk::Image>(x); });
-    return ret;
-  }(init);
-  data.swapchain_image_views = [](Init& init) {
-    auto tmp = init.swapchain.get_image_views().value();
-    std::vector<vk::ImageView> ret(tmp.size());
-    std::transform(tmp.cbegin(), tmp.cend(), ret.begin(),
-                   [](VkImageView x) { return static_cast<vk::ImageView>(x); });
-    return ret;
-  }(init);
-
   data.framebuffers.resize(data.swapchain_image_views.size());
 
   for (size_t i = 0; i < data.swapchain_image_views.size(); i++) {
@@ -674,6 +706,30 @@ int create_command_buffers(Init& init, RenderData& data) {
 
     vk::Rect2D scissor(vk::Offset2D(0, 0), init.swapchain.extent);
 
+    init.disp.cmdBindPipeline(data.command_buffers[i],
+                              VK_PIPELINE_BIND_POINT_COMPUTE,
+                              data.colormap_pipeline);
+    init.disp.cmdBindDescriptorSets(
+        data.command_buffers[i], VK_PIPELINE_BIND_POINT_COMPUTE,
+        data.colormap_pipeline_layout, 0, 1,
+        pcast<VkDescriptorSet>(&data.colormap_descriptor_set), 0, nullptr);
+    init.disp.cmdDispatch(data.command_buffers[i], 640 / 8, 480 / 8, 1);
+    // Note, in almost every case image/buffer memory barriers are equivalent
+    // to global memory barriers, except maybe for layout transitions.
+    vk::ImageMemoryBarrier storage_to_present(vk::AccessFlagBits::eMemoryWrite,
+                                              vk::AccessFlagBits::eMemoryRead);
+    storage_to_present.setImage(data.colormap.img);
+    u32 gQI = init.device.get_queue_index(vkb::QueueType::graphics).value();
+    storage_to_present.setSrcQueueFamilyIndex(gQI);
+    storage_to_present.setDstQueueFamilyIndex(gQI);
+    storage_to_present.setOldLayout(vk::ImageLayout::eGeneral);
+    storage_to_present.setNewLayout(vk::ImageLayout::eShaderReadOnlyOptimal);
+    storage_to_present.setSubresourceRange(
+        {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1});
+    init.disp.cmdPipelineBarrier(
+        data.command_buffers[i], VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT, 0, 0, nullptr, 0, nullptr, 1,
+        pcast<VkImageMemoryBarrier>(&storage_to_present));
     init.disp.cmdSetViewport(data.command_buffers[i], 0, 1,
                              pcast<VkViewport>(&viewport));
     init.disp.cmdSetScissor(data.command_buffers[i], 0, 1,
@@ -695,6 +751,20 @@ int create_command_buffers(Init& init, RenderData& data) {
                                    offsets);
     init.disp.cmdDraw(data.command_buffers[i], 6, 1, 0, 0);
     init.disp.cmdEndRenderPass(data.command_buffers[i]);
+    vk::ImageMemoryBarrier present_to_storage{};
+    present_to_storage.setOldLayout(vk::ImageLayout::eShaderReadOnlyOptimal);
+    present_to_storage.setNewLayout(vk::ImageLayout::eGeneral);
+    present_to_storage.setSrcQueueFamilyIndex(gQI);
+    present_to_storage.setDstQueueFamilyIndex(gQI);
+    present_to_storage.setImage(data.colormap.img);
+    present_to_storage.setSubresourceRange(
+        {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1});
+    present_to_storage.setSrcAccessMask(vk::AccessFlagBits::eShaderRead);
+    present_to_storage.setDstAccessMask(vk::AccessFlagBits::eShaderWrite);
+    init.disp.cmdPipelineBarrier(
+        data.command_buffers[i], VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1,
+        pcast<VkImageMemoryBarrier>(&present_to_storage));
     if (init.disp.endCommandBuffer(data.command_buffers[i]) != VK_SUCCESS) {
       std::cout << "failed to record command buffer\n";
       return -1; // failed to record command buffer!
@@ -745,7 +815,7 @@ int recreate_swapchain(Init& init, RenderData& data) {
     vkDestroyImageView(init.device, image_view, nullptr);
   }
 
-  if (0 != create_swapchain(init))
+  if (0 != create_swapchain(init, data))
     return -1;
   if (0 != create_framebuffers(init, data))
     return -1;
@@ -825,6 +895,7 @@ void cleanup(Init& init, RenderData& data) {
   init.disp.destroyCommandPool(data.command_pool, nullptr);
   init.disp.destroyCommandPool(init.transfer_pool, nullptr);
   init.disp.destroyDescriptorSetLayout(data.descriptor_set_layout, nullptr);
+  init.disp.destroyDescriptorSetLayout(data.colormap_dsl, nullptr);
   init.disp.destroyDescriptorPool(data.descriptor_pool, nullptr);
 
   for (auto framebuffer : data.framebuffers) {
@@ -832,11 +903,13 @@ void cleanup(Init& init, RenderData& data) {
   }
 
   init.disp.destroyPipeline(data.graphics_pipeline, nullptr);
+  init.disp.destroyPipeline(data.colormap_pipeline, nullptr);
   init.disp.destroyPipelineLayout(data.pipeline_layout, nullptr);
+  init.disp.destroyPipelineLayout(data.colormap_pipeline_layout, nullptr);
   init.disp.destroyRenderPass(data.render_pass, nullptr);
 
   for (auto& image_view : data.swapchain_image_views) {
-    init.disp.destroyImageView(static_cast<VkImageView>(image_view), nullptr);
+    init.disp.destroyImageView(image_view, nullptr);
   }
   init.disp.destroySampler(data.colormap_sampler, nullptr);
   init.disp.destroyImageView(data.colormap_image_view, nullptr);
@@ -846,6 +919,10 @@ void cleanup(Init& init, RenderData& data) {
                    init.staging.allocation);
   vmaDestroyBuffer(init.allocator, data.vertex_buffer.buffer,
                    data.vertex_buffer.allocation);
+  vmaDestroyBuffer(init.allocator, data.colormap_buffer.buffer,
+                   data.colormap_buffer.allocation);
+  vmaDestroyBuffer(init.allocator, data.colormap_index_buffer.buffer,
+                   data.colormap_index_buffer.allocation);
   vmaDestroyAllocator(init.allocator);
   vkb::destroy_swapchain(init.swapchain);
   vkb::destroy_device(init.device);
@@ -903,11 +980,6 @@ void writeToBuffer(Init& init, const void* src, MetaBuffer& dst, size_t size) {
         VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
         VMA_ALLOCATION_CREATE_MAPPED_BIT;
     init.staging.allocate(init.allocator, allocCreateInfo, stagingBCI);
-    /*init.staging.allocation = VmaAllocation{};
-    init.staging.aInfo = VmaAllocationInfo{};
-    vmaCreateBuffer(init.allocator,
-    bit_cast<VkBufferCreateInfo*>(&stagingBCI), &allocCreateInfo,
-    bit_cast<VkBuffer*>(&init.staging), &stagingAllocation, &stagingInfo);*/
   }
 
   memcpy(init.staging.aInfo.pMappedData, src, size);
@@ -917,6 +989,11 @@ void writeToBuffer(Init& init, const void* src, MetaBuffer& dst, size_t size) {
 template <class T>
 void vecToBuffer(Init& init, std::vector<T> v, MetaBuffer& dst) {
   writeToBuffer(init, v.data(), dst, v.size() * sizeof(T));
+}
+
+template <class T, size_t N>
+void vecToBuffer(Init& init, std::array<T, N> v, MetaBuffer& dst) {
+  writeToBuffer(init, v.data(), dst, N * sizeof(T));
 }
 
 void make_vertex_buffer(Init& init, RenderData& data,
@@ -933,12 +1010,38 @@ void make_vertex_buffer(Init& init, RenderData& data,
   vecToBuffer(init, vertices, data.vertex_buffer);
 }
 
+void make_colormap_index_buffer(Init& init, RenderData& data,
+                                const std::vector<u32>& v) {
+  vk::BufferCreateInfo BCI({}, v.size() * sizeof(u32),
+                           vk::BufferUsageFlagBits::eStorageBuffer |
+                               vk::BufferUsageFlagBits::eTransferDst);
+  VmaAllocationCreateInfo allocCreateInfo{};
+  allocCreateInfo.usage = VMA_MEMORY_USAGE_AUTO;
+  allocCreateInfo.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
+  allocCreateInfo.priority = 1.0f;
+  data.colormap_index_buffer.allocate(init.allocator, allocCreateInfo, BCI);
+  vecToBuffer(init, v, data.colormap_index_buffer);
+}
+
+void make_colormap_buffer(Init& init, RenderData& data,
+                          const std::array<AlignedColor, 256>& v) {
+  vk::BufferCreateInfo BCI({}, 256 * sizeof(AlignedColor),
+                           vk::BufferUsageFlagBits::eStorageBuffer |
+                               vk::BufferUsageFlagBits::eTransferDst);
+  VmaAllocationCreateInfo allocCreateInfo{};
+  allocCreateInfo.usage = VMA_MEMORY_USAGE_AUTO;
+  allocCreateInfo.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
+  allocCreateInfo.priority = 1.0f;
+  data.colormap_buffer.allocate(init.allocator, allocCreateInfo, BCI);
+  vecToBuffer(init, v, data.colormap_buffer);
+}
+
 int main(int argc, char* argv[]) {
   Init init;
   RenderData render_data;
   if (0 != device_initialization(init))
     return -1;
-  if (0 != create_swapchain(init))
+  if (0 != create_swapchain(init, render_data))
     return -1;
   if (0 != get_queues(init, render_data))
     return -1;
@@ -951,23 +1054,75 @@ int main(int argc, char* argv[]) {
                                vkb::QueueType::transfer))
     return -1;
   create_image(init, render_data);
-  create_descriptor(init, render_data);
-  if (0 != create_render_pass(init, render_data))
-    return -1;
-  if (0 != create_graphics_pipeline(init, render_data))
-    return -1;
-  if (0 != create_framebuffers(init, render_data))
-    return -1;
+  std::vector<u32> values(640 * 480);
+  for (size_t j = 0; j < 480; j++) {
+    f32 y = -1.0 + 2.0 * (f32)j / 480.0;
+    for (size_t i = 0; i < 640; i++) {
+      f32 x = -1.0 + 2.0 * (f32)i / 640.0;
+      u32 idx = (u32)(256 * exp(-x * x - y * y));
+      std::cout << idx << ' ';
+      values[j * 640 + i] = idx > 255 ? 255 : idx;
+    }
+    std::cout << '\n';
+  }
+  make_colormap_index_buffer(init, render_data, values);
+  make_colormap_buffer(init, render_data, viridis);
   std::vector<PositionTextureVertex> vertices = {
       {{-1.0f, -1.0f}, {0.0f, 0.0f}}, {{1.0f, -1.0f}, {1.0f, 0.0f}},
       {{1.0f, 1.0f}, {1.0f, 1.0f}},   {{1.0f, 1.0f}, {1.0f, 1.0f}},
       {{-1.0f, 1.0f}, {0.0f, 1.0f}},  {{-1.0f, -1.0f}, {0.0f, 0.0f}},
   };
   make_vertex_buffer(init, render_data, vertices);
+  if (0 != create_descriptor(init, render_data)) {
+    return -1;
+  }
+  if (0 != create_render_pass(init, render_data))
+    return -1;
+  if (0 != create_graphics_pipelines(init, render_data))
+    return -1;
+  if (0 != create_framebuffers(init, render_data))
+    return -1;
   if (0 != create_command_buffers(init, render_data))
     return -1;
+
   if (0 != create_sync_objects(init, render_data))
     return -1;
+
+  vk::BufferCreateInfo BCI({}, values.size() * sizeof(f32),
+                           vk::BufferUsageFlagBits::eStorageBuffer |
+                               vk::BufferUsageFlagBits::eTransferDst |
+                               vk::BufferUsageFlagBits::eTransferSrc);
+  VmaAllocationCreateInfo allocCreateInfo{};
+  allocCreateInfo.usage = VMA_MEMORY_USAGE_AUTO;
+  allocCreateInfo.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
+  allocCreateInfo.priority = 1.0f;
+  MetaBuffer minBuffer(init.allocator, allocCreateInfo, BCI);
+  MetaBuffer maxBuffer(init.allocator, allocCreateInfo, BCI);
+  copyBuffer(init, render_data.colormap_index_buffer, minBuffer);
+  copyBuffer(init, render_data.colormap_index_buffer, maxBuffer);
+  auto max_code = readFile<u32>("Shaders/max.comp.spv");
+  auto min_code = readFile<u32>("Shaders/min.comp.spv");
+  u32 push_size = 4;
+  Algorithm maxAlg(pcast<vk::Device>(&init.device.device),
+                   {&maxBuffer, &minBuffer}, max_code, nullptr, nullptr, 0,
+                   &push_size, 1);
+  Algorithm minAlg(pcast<vk::Device>(&init.device.device),
+                   {&maxBuffer, &minBuffer}, min_code, nullptr, nullptr, 0,
+                   &push_size, 1);
+
+  oneTimeSubmit(
+      init.device.device, render_data.command_pool, render_data.graphics_queue,
+      [&](vk::CommandBuffer cB) {
+        std::array<u32, 20> strides = {0};
+        cB.bindPipeline(vk::PipelineBindPoint::eCompute, maxAlg.m_Pipeline);
+        cB.bindDescriptorSets(vk::PipelineBindPoint::eCompute,
+                              maxAlg.m_PipelineLayout, 0,
+                              maxAlg.m_DescriptorSet, 0u);
+        while (stride < values.size()) {
+        }
+        cB.pushConstants(maxAlg.m_PipelineLayout,
+                         vk::ShaderStageFlagBits::eCompute, 0, 4, &stride);
+      });
 
   bool running = true;
   while (running) {
@@ -991,6 +1146,8 @@ int main(int argc, char* argv[]) {
   }
   init.disp.deviceWaitIdle();
 
+  vmaDestroyBuffer(init.allocator, minBuffer.buffer, minBuffer.allocation);
+  vmaDestroyBuffer(init.allocator, maxBuffer.buffer, maxBuffer.allocation);
   cleanup(init, render_data);
   return 0;
 }

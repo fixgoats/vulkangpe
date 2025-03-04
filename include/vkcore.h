@@ -2,6 +2,7 @@
 #include "SDL3/SDL.h"
 #include "hack.h"
 #include "mathhelpers.h"
+#include "metaprogramming.h"
 #include "typedefs.h"
 #include "vkFFT.h"
 #include "vk_mem_alloc.h"
@@ -10,7 +11,6 @@
 #include <cstddef>
 #include <format>
 #include <fstream>
-#include <type_traits>
 
 using std::bit_cast;
 
@@ -67,14 +67,6 @@ struct SimConstants {
   }
   constexpr u32 elementsTotal() const { return nElementsX * nElementsY; }
 };
-
-template <auto Start, auto End, auto Inc, class F>
-constexpr void constexpr_for(F&& f) {
-  if constexpr (Start < End) {
-    f(std::integral_constant<decltype(Start), Start>());
-    constexpr_for<Start + Inc, End, Inc>(f);
-  }
-}
 
 // std::ostream& operator<<(std::ostream& os, const SimConstants& obj);
 // std::ofstream& operator<<(std::ofstream& os, const SimConstants& obj);
@@ -244,12 +236,9 @@ struct Manager {
   Algorithm makeAlgorithm(std::string spirvname,
                           std::vector<MetaBuffer*> buffers,
                           const T& specConsts) {
-    constexpr size_t nSpecConsts = boost::pfr::tuple_size_v<T>;
-    std::array<u32, nSpecConsts> sizes;
-    constexpr_for<0, nSpecConsts, 1>([&sizes](auto i) {
-      sizes[i] = sizeof(boost::pfr::tuple_element_t<i, SimConstants>);
-    });
-    std::cout << "Detected " << nSpecConsts << " specialization constants.";
+    constexpr auto sizes = struct_field_sizes<T>();
+    constexpr auto n_fields = sizes.size();
+    std::cout << "Detected " << n_fields << " specialization constants.";
     return makeAlgorithmRaw(spirvname, buffers,
                             bit_cast<const u8*>(&specConsts), sizes.data(),
                             sizes.size());

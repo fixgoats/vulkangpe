@@ -5,7 +5,7 @@
 struct AlignedColor {
   vec3<f32> rgb;
   f32 pad = 0;
-  AlignedColor(f32 x, f32 y, f32, z) : rgb{x, y, z}, pad = 0 {}
+  constexpr AlignedColor(f32 x, f32 y, f32 z) : rgb{x, y, z}, pad{0} {}
 };
 // magma, inferno, plasma, viridis by Nathaniel J. Smith, Stefan van der Walt
 // and Eric Firing. CC0
