@@ -5,12 +5,77 @@
 #include <vulkan/vulkan.hpp>
 #include <vulkan/vulkan_handles.hpp>
 #define VMA_IMPLEMENTATION 1003000
+#include "SDL3/SDL.h"
 #include "SDL3/SDL_vulkan.h"
 #include "vk_mem_alloc.h"
 #include "vkcore.h"
 #include <cstdint>
 #include <iostream>
 #include <set>
+
+vk::SurfaceFormatKHR
+pickSurfaceFormat(const std::vector<vk::SurfaceFormatKHR>& formats) {
+  assert(!formats.empty());
+  vk::SurfaceFormatKHR pickedFormat = formats[0];
+  if (formats.size() == 1) {
+    if (formats[0].format == vk::Format::eUndefined) {
+      pickedFormat.format = vk::Format::eB8G8R8A8Unorm;
+      pickedFormat.colorSpace = vk::ColorSpaceKHR::eSrgbNonlinear;
+    }
+  } else {
+    // request several formats, the first found will be used
+    vk::Format requestedFormats[] = {
+        vk::Format::eB8G8R8A8Unorm, vk::Format::eR8G8B8A8Unorm,
+        vk::Format::eB8G8R8Unorm, vk::Format::eR8G8B8Unorm};
+    vk::ColorSpaceKHR requestedColorSpace = vk::ColorSpaceKHR::eSrgbNonlinear;
+    for (size_t i = 0;
+         i < sizeof(requestedFormats) / sizeof(requestedFormats[0]); i++) {
+      vk::Format requestedFormat = requestedFormats[i];
+      auto it = std::find_if(formats.begin(), formats.end(),
+                             [requestedFormat, requestedColorSpace](
+                                 vk::SurfaceFormatKHR const& f) {
+                               return (f.format == requestedFormat) &&
+                                      (f.colorSpace == requestedColorSpace);
+                             });
+      if (it != formats.end()) {
+        pickedFormat = *it;
+        break;
+      }
+    }
+  }
+  assert(pickedFormat.colorSpace == vk::ColorSpaceKHR::eSrgbNonlinear);
+  return pickedFormat;
+}
+
+std::vector<vk::Framebuffer>
+create_framebuffers(vk::Device device, std::vector<vk::ImageView> img_views,
+                    vk::RenderPass render_pass, vk::Extent2D extent) {
+  std::vector<vk::Framebuffer> frame_buffers(img_views.size());
+  std::transform(img_views.begin(), img_views.end(), frame_buffers.begin(),
+                 [&](vk::ImageView view) {
+                   vk::FramebufferCreateInfo info(
+                       {}, render_pass, view, extent.width, extent.height, 1);
+                   return device.createFramebuffer(info);
+                 });
+  return frame_buffers;
+}
+
+vk::PresentModeKHR chooseSwapPresentMode(
+    const std::vector<vk::PresentModeKHR>& present_modes,
+    vk::PresentModeKHR requested_mode = vk::PresentModeKHR::eFifo) {
+  if (requested_mode == vk::PresentModeKHR::eFifo) {
+    return vk::PresentModeKHR::eFifo;
+  }
+  for (const auto& availablePresentMode : present_modes) {
+    if (availablePresentMode == requested_mode) {
+      return availablePresentMode;
+    }
+  }
+
+  std::cout << "Warning: Requested present mode is not available, defaulting "
+               "to FIFO.\n";
+  return vk::PresentModeKHR::eFifo;
+}
 
 MetaBuffer::MetaBuffer() {
   buffer = vk::Buffer{};
@@ -263,7 +328,7 @@ std::set<std::string> get_supported_extensions() {
   uint32_t count = 0;
   result = vk::enumerateInstanceExtensionProperties(nullptr, &count, nullptr);
   if (result != vk::Result::eSuccess) {
-    runtime_exc("Couldn't enumerate instance extension properties.");
+    runtime_exc("Couldn't enumerate instance extension properties.\n");
   }
 
   std::vector<vk::ExtensionProperties> extensionProperties(count);
@@ -272,7 +337,7 @@ std::set<std::string> get_supported_extensions() {
   result = vk::enumerateInstanceExtensionProperties(nullptr, &count,
                                                     extensionProperties.data());
   if (result != vk::Result::eSuccess) {
-    runtime_exc("Couldn't write instance extension properties to buffer");
+    runtime_exc("Couldn't write instance extension properties to buffer.\n");
   }
 
   std::set<std::string> extensions;
@@ -285,24 +350,33 @@ std::set<std::string> get_supported_extensions() {
 
 static const std::string appName{"Vulkan GPE Simulator"};
 static const std::string engineName{"argablarg"};
-Manager::Manager(size_t stagingSize, SDL_Window* window) {
+Manager::Manager(size_t stagingSize, std::string_view name, u32 flags) {
+  SDL_Init(SDL_INIT_VIDEO);
+  if (!SDL_Vulkan_LoadLibrary(nullptr)) {
+    SDL_Log("Unable to load Vulkan library: %s", SDL_GetError());
+  };
+  window = SDL_CreateWindow(name.data(), 640, 480, SDL_WINDOW_VULKAN | flags);
+  if (!window) {
+    SDL_Log("CreateWindow failed with error: %s", SDL_GetError());
+  }
   vk::ApplicationInfo appInfo{appName.c_str(), 1, engineName.c_str(), 1,
-                              VK_API_VERSION_1_1};
-  // Validation layers are extremely helpful and don't incur that much
-  // performance penalty, we'll only turn them off if we want absolute maximum
-  // performance.
+                              VK_API_VERSION_1_3};
+  // Validation layers are extremely helpful, we'll only turn them off if we
+  // want absolute maximum performance.
 #ifdef NO_LAYERS
   const std::vector<const char*> layers;
 #else
   const std::vector<const char*> layers = {"VK_LAYER_KHRONOS_validation"};
   std::cout << "Running debug build\n";
 #endif // DEBUG
-  const std::vector<const char*> instanceExtensions = {"VK_KHR_surface",
-                                                       "VK_KHR_xlib_surface"};
+  u32 instance_extension_count = 0;
+  auto extensions = SDL_Vulkan_GetInstanceExtensions(&instance_extension_count);
+  // const std::vector<const char*> instanceExtensions = ;
   const std::vector<const char*> deviceExtensions = {
       vk::KHRSwapchainExtensionName};
-  vk::InstanceCreateInfo iCI(vk::InstanceCreateFlags(), &appInfo, layers,
-                             instanceExtensions);
+  vk::InstanceCreateInfo iCI(vk::InstanceCreateFlags(), &appInfo, layers.size(),
+                             layers.data(), instance_extension_count,
+                             extensions);
   try {
     instance = vk::createInstance(iCI);
   } catch (vk::SystemError& err) {
@@ -355,7 +429,6 @@ Manager::Manager(size_t stagingSize, SDL_Window* window) {
   vmaCreateBuffer(allocator, bit_cast<VkBufferCreateInfo*>(&stagingBCI),
                   &allocCreateInfo, bit_cast<VkBuffer*>(&staging),
                   &stagingAllocation, &stagingInfo);
-  std::cout << "Finished creating Manager\n";
 }
 
 void Manager::copyBuffer(vk::Buffer& srcBuffer, vk::Buffer& dstBuffer,
@@ -512,61 +585,232 @@ Manager::~Manager() {
   instance.destroy();
 }
 
-Renderer::Renderer() {}
+vk::SwapchainKHR create_swapchain(vk::Device device, vk::SurfaceKHR surface,
+                                  vk::SurfaceCapabilitiesKHR capabilities,
+                                  vk::SurfaceFormatKHR surface_format,
+                                  vk::PresentModeKHR present_mode,
+                                  vk::Extent2D swapchain_extent, u32 n_images,
+                                  std::array<u32, 2> qfis,
+                                  vk::SwapchainKHR old_swapchain = nullptr) {
+  vk::SurfaceTransformFlagBitsKHR pre_transform =
+      (capabilities.supportedTransforms &
+       vk::SurfaceTransformFlagBitsKHR::eIdentity)
+          ? vk::SurfaceTransformFlagBitsKHR::eIdentity
+          : capabilities.currentTransform;
+
+  vk::CompositeAlphaFlagBitsKHR composite_alpha =
+      (capabilities.supportedCompositeAlpha &
+       vk::CompositeAlphaFlagBitsKHR::ePreMultiplied)
+          ? vk::CompositeAlphaFlagBitsKHR::ePreMultiplied
+      : (capabilities.supportedCompositeAlpha &
+         vk::CompositeAlphaFlagBitsKHR::ePostMultiplied)
+          ? vk::CompositeAlphaFlagBitsKHR::ePostMultiplied
+      : (capabilities.supportedCompositeAlpha &
+         vk::CompositeAlphaFlagBitsKHR::eInherit)
+          ? vk::CompositeAlphaFlagBitsKHR::eInherit
+          : vk::CompositeAlphaFlagBitsKHR::eOpaque;
+  vk::SwapchainCreateInfoKHR create_info(
+      {}, surface, n_images, surface_format.format, surface_format.colorSpace,
+      swapchain_extent, 1, vk::ImageUsageFlagBits::eColorAttachment,
+      vk::SharingMode::eExclusive, {}, pre_transform, composite_alpha,
+      present_mode, true, old_swapchain);
+  if (qfis[0] != qfis[1]) {
+    // If the graphics and present queues are from different queue families, we
+    // either have to explicitly transfer ownership of images between the
+    // queues, or we have to create the swapchain with imageSharingMode as
+    // VK_SHARING_MODE_CONCURRENT
+    create_info.imageSharingMode = vk::SharingMode::eConcurrent;
+    create_info.queueFamilyIndexCount = 2;
+    create_info.pQueueFamilyIndices = qfis.data();
+  }
+  return device.createSwapchainKHR(create_info);
+}
+
+std::vector<vk::ImageView>
+create_image_views(vk::Device device, vk::SurfaceFormatKHR surface_format,
+                   std::vector<vk::Image> images) {
+  std::vector<vk::ImageView> swapchain_image_views;
+  swapchain_image_views.reserve(images.size());
+  vk::ImageViewCreateInfo img_view_create_info(
+      {}, {}, vk::ImageViewType::e2D, surface_format.format, {},
+      {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1});
+  for (auto img : images) {
+    img_view_create_info.image = img;
+    swapchain_image_views.push_back(
+        device.createImageView(img_view_create_info));
+  }
+  return swapchain_image_views;
+}
+
+Renderer::Renderer(Manager* manager) {
+  p_mgr = manager;
+  capabilities =
+      p_mgr->physicalDevice.getSurfaceCapabilitiesKHR(p_mgr->surface);
+  auto formats = p_mgr->physicalDevice.getSurfaceFormatsKHR(p_mgr->surface);
+  if (formats.empty()) {
+    runtime_exc("Fatal: No surface formats found");
+  }
+  surface_format = pickSurfaceFormat(formats);
+  auto presentModes =
+      p_mgr->physicalDevice.getSurfacePresentModesKHR(p_mgr->surface);
+  if (presentModes.empty()) {
+    runtime_exc("Fatal: No present modes found");
+  }
+  present_mode = chooseSwapPresentMode(presentModes);
+  vk::Extent2D newExtent;
+  if (capabilities.currentExtent.width ==
+      std::numeric_limits<uint32_t>::max()) {
+    s32 width, height;
+    SDL_GetWindowSize(p_mgr->window, &width, &height);
+    u32 uwidth = (u32)width;
+    u32 uheight = (u32)height;
+    swapChainExtent.width =
+        std::clamp(uwidth, capabilities.minImageExtent.width,
+                   capabilities.maxImageExtent.height);
+    swapChainExtent.height =
+        std::clamp(uheight, capabilities.minImageExtent.height,
+                   capabilities.maxImageExtent.height);
+
+  } else {
+    swapChainExtent.width = std::clamp(capabilities.currentExtent.width,
+                                       capabilities.minImageExtent.width,
+                                       capabilities.maxImageExtent.width);
+    swapChainExtent.height = std::clamp(capabilities.currentExtent.height,
+                                        capabilities.minImageExtent.height,
+                                        capabilities.maxImageExtent.height);
+  }
+  if (capabilities.currentExtent.width ==
+      std::numeric_limits<uint32_t>::max()) {
+    swapChainExtent.width =
+        std::clamp(swapChainExtent.width, capabilities.minImageExtent.width,
+                   capabilities.maxImageExtent.width);
+    swapChainExtent.height =
+        std::clamp(swapChainExtent.height, capabilities.minImageExtent.height,
+                   capabilities.maxImageExtent.height);
+  } else {
+    newExtent = capabilities.currentExtent;
+  }
+  n_images =
+      std::clamp(3u, capabilities.minImageCount, capabilities.maxImageCount);                                                   : 1;
+  vk::SurfaceTransformFlagBitsKHR pre_transform =
+      (capabilities.supportedTransforms &
+       vk::SurfaceTransformFlagBitsKHR::eIdentity)
+          ? vk::SurfaceTransformFlagBitsKHR::eIdentity
+          : capabilities.currentTransform;
+  capabilities.currentTransform = pre_transform;
+
+  vk::CompositeAlphaFlagBitsKHR composite_alpha =
+      (capabilities.supportedCompositeAlpha &
+       vk::CompositeAlphaFlagBitsKHR::ePreMultiplied)
+          ? vk::CompositeAlphaFlagBitsKHR::ePreMultiplied
+      : (capabilities.supportedCompositeAlpha &
+         vk::CompositeAlphaFlagBitsKHR::ePostMultiplied)
+          ? vk::CompositeAlphaFlagBitsKHR::ePostMultiplied
+      : (capabilities.supportedCompositeAlpha &
+         vk::CompositeAlphaFlagBitsKHR::eInherit)
+          ? vk::CompositeAlphaFlagBitsKHR::eInherit
+          : vk::CompositeAlphaFlagBitsKHR::eOpaque;
+
+  vk::SwapchainCreateInfoKHR create_info(
+      {}, p_mgr->surface, n_images, surface_format.format,
+      surface_format.colorSpace, newExtent, 1,
+      vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive, {},
+      pre_transform, composite_alpha, present_mode, true, nullptr);
+  std::array<u32, 2> qfi = {p_mgr->gQFI, p_mgr->pQFI};
+  if (qfi[0] != qfi[1]) {
+    // If the graphics and present queues are from different queue families, we
+    // either have to explicitly transfer ownership of images between the
+    // queues, or we have to create the swapchain with imageSharingMode as
+    // VK_SHARING_MODE_CONCURRENT
+    create_info.imageSharingMode = vk::SharingMode::eConcurrent;
+    create_info.queueFamilyIndexCount = 2;
+    create_info.pQueueFamilyIndices = qfi.data();
+  }
+  swapchain = p_mgr->device.createSwapchainKHR(create_info);
+  swapChainImages = p_mgr->device.getSwapchainImagesKHR(swapchain);
+  swapChainImageViews.reserve(swapChainImages.size());
+  vk::ImageViewCreateInfo img_view_create_info(
+      {}, {}, vk::ImageViewType::e2D, surface_format.format, {},
+      {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1});
+  for (auto img : swapChainImages) {
+    img_view_create_info.image = img;
+    swapChainImageViews.push_back(
+        p_mgr->device.createImageView(img_view_create_info));
+  }
+
+  vk::AttachmentDescription color_attachment(
+      vk::AttachmentDescriptionFlags(),
+      static_cast<vk::Format>(swapChainImageFormat),
+      vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear,
+      vk::AttachmentStoreOp::eStore, vk::AttachmentLoadOp::eDontCare,
+      vk::AttachmentStoreOp::eDontCare, vk::ImageLayout::eUndefined,
+      vk::ImageLayout::ePresentSrcKHR);
+
+  vk::AttachmentReference color_attachment_ref(
+      0, vk::ImageLayout::eColorAttachmentOptimal);
+
+  vk::SubpassDescription subpass(vk::SubpassDescriptionFlags(),
+                                 vk::PipelineBindPoint::eGraphics, {},
+                                 color_attachment_ref);
+
+  vk::SubpassDependency dependency{};
+  dependency.setSrcSubpass(vk::SubpassExternal);
+  dependency.setDstSubpass(0);
+  dependency.setSrcStageMask(vk::PipelineStageFlagBits::eColorAttachmentOutput);
+  dependency.setSrcAccessMask(vk::AccessFlagBits::eNone);
+  dependency.setDstStageMask(vk::PipelineStageFlagBits::eColorAttachmentOutput);
+  dependency.setDstAccessMask(vk::AccessFlagBits::eColorAttachmentRead |
+                              vk::AccessFlagBits::eColorAttachmentWrite);
+
+  vk::RenderPassCreateInfo render_pass_info({}, color_attachment, subpass,
+                                            dependency);
+
+  renderPass = p_mgr->device.createRenderPass(render_pass_info);
+  swapChainFrameBuffers = create_framebuffers(
+      p_mgr->device, swapChainImageViews, renderPass, swapChainExtent);
+}
+
 void Renderer::cleanupSwapchain() {
-  vk::Device& dev = mgr->device;
+  vk::Device& dev = p_mgr->device;
   for (auto& fb : swapChainFrameBuffers) {
     dev.destroyFramebuffer(fb);
   }
   for (auto& iv : swapChainImageViews) {
     dev.destroyImageView(iv);
   }
-  dev.destroySwapchainKHR(swapChain);
+  dev.destroySwapchainKHR(swapchain);
 }
 void Renderer::recreateSwapchain() {
-  int width = 0, height = 0;
-  while (width == 0 | height == 0) {
-    SDL_GetWindowSize(window, &width, &height);
-    SDL_Event event;
-    SDL_WaitEvent(&event);
-  };
-  mgr->device.waitIdle();
-  cleanupSwapchain();
-};
+  if (capabilities.currentExtent.width ==
+      std::numeric_limits<uint32_t>::max()) {
+    s32 width, height;
+    SDL_GetWindowSize(p_mgr->window, &width, &height);
+    u32 uwidth = (u32)width;
+    u32 uheight = (u32)height;
+    swapChainExtent.width =
+        std::clamp(uwidth, capabilities.minImageExtent.width,
+                   capabilities.maxImageExtent.height);
+    swapChainExtent.height =
+        std::clamp(uheight, capabilities.minImageExtent.height,
+                   capabilities.maxImageExtent.height);
 
-vk::SurfaceFormatKHR
-pickSurfaceFormat(std::vector<vk::SurfaceFormatKHR> const& formats) {
-  assert(!formats.empty());
-  vk::SurfaceFormatKHR pickedFormat = formats[0];
-  if (formats.size() == 1) {
-    if (formats[0].format == vk::Format::eUndefined) {
-      pickedFormat.format = vk::Format::eB8G8R8A8Unorm;
-      pickedFormat.colorSpace = vk::ColorSpaceKHR::eSrgbNonlinear;
-    }
   } else {
-    // request several formats, the first found will be used
-    vk::Format requestedFormats[] = {
-        vk::Format::eB8G8R8A8Unorm, vk::Format::eR8G8B8A8Unorm,
-        vk::Format::eB8G8R8Unorm, vk::Format::eR8G8B8Unorm};
-    vk::ColorSpaceKHR requestedColorSpace = vk::ColorSpaceKHR::eSrgbNonlinear;
-    for (size_t i = 0;
-         i < sizeof(requestedFormats) / sizeof(requestedFormats[0]); i++) {
-      vk::Format requestedFormat = requestedFormats[i];
-      auto it = std::find_if(formats.begin(), formats.end(),
-                             [requestedFormat, requestedColorSpace](
-                                 vk::SurfaceFormatKHR const& f) {
-                               return (f.format == requestedFormat) &&
-                                      (f.colorSpace == requestedColorSpace);
-                             });
-      if (it != formats.end()) {
-        pickedFormat = *it;
-        break;
-      }
-    }
+    swapChainExtent.width = std::clamp(capabilities.currentExtent.width,
+                                       capabilities.minImageExtent.width,
+                                       capabilities.maxImageExtent.width);
+    swapChainExtent.height = std::clamp(capabilities.currentExtent.height,
+                                        capabilities.minImageExtent.height,
+                                        capabilities.maxImageExtent.height);
   }
-  assert(pickedFormat.colorSpace == vk::ColorSpaceKHR::eSrgbNonlinear);
-  return pickedFormat;
-}
+  vk::SwapchainKHR new_swapchain = create_swapchain(
+      p_mgr->device, p_mgr->surface, capabilities, surface_format, present_mode,
+      swapChainExtent, n_images, {p_mgr->gQFI, p_mgr->pQFI}, swapchain);
+  cleanupSwapchain();
+  swapchain = new_swapchain;
+  swapChainImages = p_mgr->device.getSwapchainImagesKHR(swapchain);
+  swapChainImageViews =
+      create_image_views(p_mgr->device, surface_format, swapChainImages);
+};
 
 void Renderer::createSwapChain(const vk::SwapchainKHR& oldSwapChain) {
   vk::SurfaceFormatKHR surfaceFormat =
@@ -574,7 +818,7 @@ void Renderer::createSwapChain(const vk::SwapchainKHR& oldSwapChain) {
   swapChainImageFormat = surfaceFormat.format;
   vk::SurfaceCapabilitiesKHR surfaceCapabilities =
       mgr->physicalDevice.getSurfaceCapabilitiesKHR(surface);
-  vk::Extent2D newExtent;
+
   if (surfaceCapabilities.currentExtent.width ==
       std::numeric_limits<uint32_t>::max()) {
     swapChainExtent.width = std::clamp(

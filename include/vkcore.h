@@ -102,11 +102,15 @@ struct AllocatedImage {
                 vk::ImageCreateInfo& iCI);
 };
 
+struct SSBO430 {
+  u32 n_fields;
+
+  MetaBuffer b;
+};
+
 struct Algorithm {
   // We want to have this pointer for automatic destruction
   vk::Device* p_device;
-  // wait does it even need to hold on the buffer pointers after initialization?
-  // nope, removing
   vk::DescriptorSetLayout m_DSL;
   vk::DescriptorPool m_DescriptorPool;
   vk::DescriptorSet m_DescriptorSet;
@@ -135,6 +139,7 @@ static const std::vector<std::string> deviceExtensions = {
     vk::KHRSwapchainExtensionName};
 
 struct Manager {
+  SDL_Window* window;
   vk::Instance instance;
   vk::PhysicalDevice physicalDevice;
   vk::Device device;
@@ -150,7 +155,7 @@ struct Manager {
   u32 pQFI = UINT32_MAX;
   vk::CommandPool commandPool;
 
-  Manager(size_t stagingSize, SDL_Window* window);
+  Manager(size_t stagingSize, std::string_view name, u32 flags);
   void finishSetup(size_t stagingSize, vk::SurfaceKHR& surface);
   // Manager uses a single staging buffer for efficient copies.
   void copyBuffer(vk::Buffer& srcBuffer, vk::Buffer& dstBuffer, u32 bufferSize);
@@ -285,14 +290,13 @@ struct Manager {
 
 struct Renderer {
   // non-owned
-  Manager* mgr;
-  SDL_Window* window;
-  // owned
-  vk::SurfaceKHR surface;
+  Manager* p_mgr;
+  // SDL_Window* window;
+  //  owned
   vk::RenderPass renderPass;
   vk::Pipeline graphicsPipeline;
   vk::PipelineLayout graphicsPipelineLayout;
-  vk::SwapchainKHR swapChain;
+  vk::SwapchainKHR swapchain;
   std::vector<vk::Framebuffer> swapChainFrameBuffers;
   std::vector<vk::Image> swapChainImages;
   vk::Format swapChainImageFormat;
@@ -308,13 +312,16 @@ struct Renderer {
   vk::DescriptorSetLayout descriptorSetLayout;
   vk::DescriptorPool descriptorPool;
   vk::DescriptorSet descriptorSet;
+  vk::SurfaceCapabilitiesKHR capabilities;
+  vk::SurfaceFormatKHR surface_format;
+  vk::PresentModeKHR present_mode;
+  u32 n_images;
   bool frameBufferResized;
   u32 currentFrame = 0;
-  Renderer();
+  Renderer(Manager* manager);
   void cleanupSwapchain();
   void createGraphicsPipeline();
   void recreateSwapchain();
-  void createSwapChain(const vk::SwapchainKHR& oldSwapChain);
   void recordCommandBuffer(vk::CommandBuffer& cB, u32 imageIndex);
   void drawFrame();
   ~Renderer();

@@ -1,0 +1,23 @@
+#version 440
+
+layout(constant_id = 0) const uint NELEMENTS = 640 * 480;
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+layout(std430, binding = 0) buffer Src { float src[NELEMENTS]; }
+layout(std430, binding = 1) buffer Max {
+  float maximum;
+  float maxima[(NELEMENTS + 1) / 2];
+};
+
+void main() {
+  uint i = gl_GlobalInvocationID.x;
+  if (2 * i + 1 < NELEMENTS) {
+    if src
+      [2 * i] > src[2 * i + 1] {
+        maxima[i] = src[2 * i];
+        minima[i] = src[2 * i + 1];
+      }
+    else {
+      maxima[i] = src[2 * i + 1];
+      minima[i] = src[2 * i];
+    }
+  }

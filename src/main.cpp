@@ -1081,10 +1081,8 @@ void make_colormap_buffers(Init& init, RenderData& data,
 }
 
 int main(int argc, char* argv[]) {
-  Init init;
+  Manager manager(10 * 1024 * 1024, "Bleh", SDL_WINDOW_RESIZABLE);
   RenderData render_data;
-  if (0 != device_initialization(init))
-    return -1;
   if (0 != create_swapchain(init, render_data))
     return -1;
   if (0 != get_queues(init, render_data))
