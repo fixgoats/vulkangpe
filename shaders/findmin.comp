@@ -1,11 +1,16 @@
 #version 440
 
-layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+layout(constant_id = 0) const uint NELEMENTS = 1;
+layout(constant_id = 1) const uint GROUPSIZE = 1;
+layout(local_size_x_id = 1, local_size_y = 1, local_size_z = 1) in;
 layout(std430, binding = 0) buffer Min { float data[NELEMENTS]; }
 minima;
 layout(push_constant) uniform Stride { uint stride; };
 
 void main() {
   uint i = gl_GlobalInvocationID.x;
-  minima.data[i] = min(minima.data[i], minima.data[i + stride]);
+  if (i * stride + stride / 2 < NELEMENTS) {
+    minima.data[stride * i] =
+        min(minima.data[stride * i], minima.data[i * stride + stride / 2]);
+  }
 }

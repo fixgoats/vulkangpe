@@ -103,17 +103,18 @@ struct AllocatedImage {
 };
 
 struct Algorithm {
-  // Never owned
-  vk::Device* p_Device;
-  std::vector<MetaBuffer*> p_Buffer;
-  // Owned
+  // We want to have this pointer for automatic destruction
+  vk::Device* p_device;
+  // wait does it even need to hold on the buffer pointers after initialization?
+  // nope, removing
   vk::DescriptorSetLayout m_DSL;
   vk::DescriptorPool m_DescriptorPool;
   vk::DescriptorSet m_DescriptorSet;
   vk::ShaderModule m_ShaderModule;
   vk::PipelineLayout m_PipelineLayout;
   vk::Pipeline m_Pipeline;
-  Algorithm(vk::Device* device, std::vector<MetaBuffer*> buffers,
+  Algorithm(vk::Device* device, const std::vector<vk::ImageView>& img_views,
+            const std::vector<MetaBuffer*>& buffers,
             const std::vector<u32>& spirv, const u8* specConsts = nullptr,
             const u32* sizes = nullptr, size_t nConsts = 0,
             const u32* pushSizes = nullptr, size_t nPushConstants = 0);

@@ -33,6 +33,8 @@ struct PositionTextureVertex {
 static const char* BasePath = SDL_GetBasePath();
 
 constexpr int MAX_FRAMES_IN_FLIGHT = 2;
+constexpr u32 grid_width = 256;
+constexpr u32 grid_height = 256;
 
 struct Init {
   SDL_Window* window;
@@ -131,8 +133,10 @@ struct RenderData {
   vk::DescriptorSet colormap_descriptor_set;
   vk::PipelineLayout colormap_pipeline_layout;
 
-  MetaBuffer colormap_index_buffer;
   MetaBuffer colormap_buffer;
+  MetaBuffer max_buffer;
+  MetaBuffer min_buffer;
+  MetaBuffer value_buffer;
 };
 
 SDL_Window* create_window_sdl(const char* window_name = "", u32 flags = 0) {
@@ -234,7 +238,7 @@ void create_image(Init& init, RenderData& data) {
   auto format = vk::Format::eR32G32B32A32Sfloat;
   vk::ImageCreateInfo imageInfo{};
   imageInfo.setImageType(vk::ImageType::e2D);
-  imageInfo.setExtent({640, 480, 1});
+  imageInfo.setExtent({grid_width, grid_height, 1});
   imageInfo.setMipLevels(1);
   imageInfo.setArrayLayers(1);
   imageInfo.setFormat(format);
@@ -313,12 +317,16 @@ int create_descriptor(Init& init, RenderData& data) {
       &dsl_info, nullptr,
       pcast<VkDescriptorSetLayout>(&data.descriptor_set_layout));
 
-  std::array<vk::DescriptorSetLayoutBinding, 3> colormap_bindings = {
+  std::array<vk::DescriptorSetLayoutBinding, 5> colormap_bindings = {
       {{0, vk::DescriptorType::eStorageImage, 1,
         vk::ShaderStageFlagBits::eCompute},
        {1, vk::DescriptorType::eStorageBuffer, 1,
         vk::ShaderStageFlagBits::eCompute},
        {2, vk::DescriptorType::eStorageBuffer, 1,
+        vk::ShaderStageFlagBits::eCompute},
+       {3, vk::DescriptorType::eStorageBuffer, 1,
+        vk::ShaderStageFlagBits::eCompute},
+       {4, vk::DescriptorType::eStorageBuffer, 1,
         vk::ShaderStageFlagBits::eCompute}}};
   vk::DescriptorSetLayoutCreateInfo colormap_dsl_info({}, colormap_bindings);
   init.disp.createDescriptorSetLayout(
@@ -373,21 +381,26 @@ int create_descriptor(Init& init, RenderData& data) {
   // the same layout as TransferDstOptimal, plus the performance hit if it isn't
   // should mostly be compensated by not having to wait on memory barriers.
   img_info.setImageLayout(vk::ImageLayout::eGeneral);
-  // Apparently you bind ImageViews instead of images directly?
   img_info.setImageView(data.colormap_image_view);
-  // No sampler here, I don't think
-  vk::DescriptorBufferInfo colormap_index_info(
-      data.colormap_index_buffer.buffer, 0,
-      data.colormap_index_buffer.aInfo.size);
+  vk::DescriptorBufferInfo value_buffer_info(data.value_buffer.buffer, 0,
+                                             data.value_buffer.aInfo.size);
   vk::DescriptorBufferInfo colormap_buffer_info(
       data.colormap_buffer.buffer, 0, data.colormap_buffer.aInfo.size);
-  std::array<vk::WriteDescriptorSet, 3> writes = {
+  vk::DescriptorBufferInfo min_buffer_info(data.min_buffer.buffer, 0,
+                                           data.min_buffer.aInfo.size);
+  vk::DescriptorBufferInfo max_buffer_info(data.max_buffer.buffer, 0,
+                                           data.max_buffer.aInfo.size);
+  std::array<vk::WriteDescriptorSet, 5> writes = {
       {{data.colormap_descriptor_set, 0, 0, vk::DescriptorType::eStorageImage,
         img_info},
        {data.colormap_descriptor_set, 1, 0, 1,
-        vk::DescriptorType::eStorageBuffer, nullptr, &colormap_index_info},
+        vk::DescriptorType::eStorageBuffer, nullptr, &value_buffer_info},
        {data.colormap_descriptor_set, 2, 0, 1,
-        vk::DescriptorType::eStorageBuffer, nullptr, &colormap_buffer_info}}};
+        vk::DescriptorType::eStorageBuffer, nullptr, &colormap_buffer_info},
+       {data.colormap_descriptor_set, 3, 0, 1,
+        vk::DescriptorType::eStorageBuffer, nullptr, &min_buffer_info},
+       {data.colormap_descriptor_set, 4, 0, 1,
+        vk::DescriptorType::eStorageBuffer, nullptr, &max_buffer_info}}};
   init.disp.updateDescriptorSets(
       writes.size(), pcast<VkWriteDescriptorSet>(writes.data()), 0, nullptr);
 
@@ -508,9 +521,12 @@ int create_graphics_pipelines(Init& init, RenderData& data) {
 
   auto colormap_code =
       readFile<u32>(std::string(BasePath) + "Shaders/colormap.comp.spv");
+  auto minmax_code =
+      readFile<u32>(std::string(BasePath) + "Shaders/minmax.comp.spv");
   vk::ShaderModule colormap_module = createShaderModule(init, colormap_code);
   vk::ShaderModule vert_module = createShaderModule(init, vert_code);
   vk::ShaderModule frag_module = createShaderModule(init, frag_code);
+  vk::ShaderModule minmax_module = createShaderModule(init, minmax_code);
   if (vert_module == VK_NULL_HANDLE || frag_module == VK_NULL_HANDLE) {
     std::cout << "failed to create shader module\n";
     return -1; // failed to create shader modules
@@ -524,6 +540,9 @@ int create_graphics_pipelines(Init& init, RenderData& data) {
       vk::PipelineShaderStageCreateFlags(), vk::ShaderStageFlagBits::eFragment,
       frag_module, "main");
   vk::PipelineShaderStageCreateInfo colormap_stage_info(
+      vk::PipelineShaderStageCreateFlags(), vk::ShaderStageFlagBits::eCompute,
+      colormap_module, "main");
+  vk::PipelineShaderStageCreateInfo minmax_stage_info(
       vk::PipelineShaderStageCreateFlags(), vk::ShaderStageFlagBits::eCompute,
       colormap_module, "main");
 
@@ -946,7 +965,7 @@ MetaBuffer make_staging_buffer(Init& init, size_t size) {
   return MetaBuffer(init.allocator, allocCreateInfo, stagingBCI);
 }
 
-void copyBuffer(Init& init, MetaBuffer& src, MetaBuffer& dst,
+void copyBuffer(Init& init, const MetaBuffer& src, MetaBuffer& dst,
                 u32 size = UINT32_MAX) {
   if (size == UINT32_MAX)
     size = src.aInfo.size;
@@ -987,13 +1006,32 @@ void writeToBuffer(Init& init, const void* src, MetaBuffer& dst, size_t size) {
 }
 
 template <class T>
-void vecToBuffer(Init& init, std::vector<T> v, MetaBuffer& dst) {
+void vecToBuffer(Init& init, const std::vector<T>& v, MetaBuffer& dst) {
   writeToBuffer(init, v.data(), dst, v.size() * sizeof(T));
 }
 
 template <class T, size_t N>
-void vecToBuffer(Init& init, std::array<T, N> v, MetaBuffer& dst) {
+void vecToBuffer(Init& init, const std::array<T, N>& v, MetaBuffer& dst) {
   writeToBuffer(init, v.data(), dst, N * sizeof(T));
+}
+
+template <class T>
+void bufferToVec(Init& init, const MetaBuffer& src, std::vector<T>& v) {
+  if (src.aInfo.size > init.staging.aInfo.size) {
+    vmaDestroyBuffer(init.allocator, init.staging.buffer,
+                     init.staging.allocation);
+    vk::BufferCreateInfo stagingBCI({}, src.aInfo.size,
+                                    vk::BufferUsageFlagBits::eTransferSrc |
+                                        vk::BufferUsageFlagBits::eTransferDst);
+    VmaAllocationCreateInfo allocCreateInfo{};
+    allocCreateInfo.usage = VMA_MEMORY_USAGE_AUTO;
+    allocCreateInfo.flags =
+        VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+        VMA_ALLOCATION_CREATE_MAPPED_BIT;
+    init.staging.allocate(init.allocator, allocCreateInfo, stagingBCI);
+  }
+  copyBuffer(init, src, init.staging);
+  memcpy(v.data(), init.staging.aInfo.pMappedData, v.size() * sizeof(T));
 }
 
 void make_vertex_buffer(Init& init, RenderData& data,
@@ -1010,29 +1048,35 @@ void make_vertex_buffer(Init& init, RenderData& data,
   vecToBuffer(init, vertices, data.vertex_buffer);
 }
 
-void make_colormap_index_buffer(Init& init, RenderData& data,
-                                const std::vector<u32>& v) {
-  vk::BufferCreateInfo BCI({}, v.size() * sizeof(u32),
+void make_minmax_buffers(Init& init, RenderData& data, size_t size) {
+  vk::BufferCreateInfo BCI({}, size,
                            vk::BufferUsageFlagBits::eStorageBuffer |
-                               vk::BufferUsageFlagBits::eTransferDst);
+                               vk::BufferUsageFlagBits::eTransferDst |
+                               vk::BufferUsageFlagBits::eTransferSrc);
   VmaAllocationCreateInfo allocCreateInfo{};
   allocCreateInfo.usage = VMA_MEMORY_USAGE_AUTO;
   allocCreateInfo.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
   allocCreateInfo.priority = 1.0f;
-  data.colormap_index_buffer.allocate(init.allocator, allocCreateInfo, BCI);
-  vecToBuffer(init, v, data.colormap_index_buffer);
 }
 
-void make_colormap_buffer(Init& init, RenderData& data,
-                          const std::array<AlignedColor, 256>& v) {
-  vk::BufferCreateInfo BCI({}, 256 * sizeof(AlignedColor),
+void make_colormap_buffers(Init& init, RenderData& data,
+                           const std::array<cm::AlignedColor, 256>& v,
+                           u32 width, u32 height) {
+  vk::BufferCreateInfo BCI({}, 256 * sizeof(cm::AlignedColor),
                            vk::BufferUsageFlagBits::eStorageBuffer |
                                vk::BufferUsageFlagBits::eTransferDst);
   VmaAllocationCreateInfo allocCreateInfo{};
   allocCreateInfo.usage = VMA_MEMORY_USAGE_AUTO;
   allocCreateInfo.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
   allocCreateInfo.priority = 1.0f;
+  vk::BufferCreateInfo valueBCI({}, width * height * sizeof(f32),
+                                vk::BufferUsageFlagBits::eStorageBuffer |
+                                    vk::BufferUsageFlagBits::eTransferDst |
+                                    vk::BufferUsageFlagBits::eTransferSrc);
   data.colormap_buffer.allocate(init.allocator, allocCreateInfo, BCI);
+  data.max_buffer.allocate(init.allocator, allocCreateInfo, valueBCI);
+  data.min_buffer.allocate(init.allocator, allocCreateInfo, valueBCI);
+  data.value_buffer.allocate(init.allocator, allocCreateInfo, valueBCI);
   vecToBuffer(init, v, data.colormap_buffer);
 }
 
@@ -1054,19 +1098,17 @@ int main(int argc, char* argv[]) {
                                vkb::QueueType::transfer))
     return -1;
   create_image(init, render_data);
-  std::vector<u32> values(640 * 480);
-  for (size_t j = 0; j < 480; j++) {
+  std::vector<f32> values(grid_width * grid_height);
+  for (size_t j = 0; j < grid_height; j++) {
     f32 y = -1.0 + 2.0 * (f32)j / 480.0;
-    for (size_t i = 0; i < 640; i++) {
+    for (size_t i = 0; i < grid_width; i++) {
       f32 x = -1.0 + 2.0 * (f32)i / 640.0;
-      u32 idx = (u32)(256 * exp(-x * x - y * y));
-      std::cout << idx << ' ';
-      values[j * 640 + i] = idx > 255 ? 255 : idx;
+      u32 idx = exp(-x * x - y * y);
+      values[j * 640 + i] = idx;
     }
-    std::cout << '\n';
   }
-  make_colormap_index_buffer(init, render_data, values);
-  make_colormap_buffer(init, render_data, viridis);
+  make_colormap_buffers(init, render_data, cm::inferno, grid_width,
+                        grid_height);
   std::vector<PositionTextureVertex> vertices = {
       {{-1.0f, -1.0f}, {0.0f, 0.0f}}, {{1.0f, -1.0f}, {1.0f, 0.0f}},
       {{1.0f, 1.0f}, {1.0f, 1.0f}},   {{1.0f, 1.0f}, {1.0f, 1.0f}},
@@ -1098,32 +1140,51 @@ int main(int argc, char* argv[]) {
   allocCreateInfo.priority = 1.0f;
   MetaBuffer minBuffer(init.allocator, allocCreateInfo, BCI);
   MetaBuffer maxBuffer(init.allocator, allocCreateInfo, BCI);
-  copyBuffer(init, render_data.colormap_index_buffer, minBuffer);
-  copyBuffer(init, render_data.colormap_index_buffer, maxBuffer);
+  std::cout << "Faulty copy is here\n";
+  copyBuffer(init, render_data.value_buffer, minBuffer);
+  std::cout << "Faulty copy is here\n";
+  copyBuffer(init, render_data.value_buffer, maxBuffer);
   auto max_code = readFile<u32>("Shaders/max.comp.spv");
-  auto min_code = readFile<u32>("Shaders/min.comp.spv");
+  // auto min_code = readFile<u32>("Shaders/min.comp.spv");
   u32 push_size = 4;
-  Algorithm maxAlg(pcast<vk::Device>(&init.device.device),
-                   {&maxBuffer, &minBuffer}, max_code, nullptr, nullptr, 0,
-                   &push_size, 1);
-  Algorithm minAlg(pcast<vk::Device>(&init.device.device),
+  Algorithm maxAlg(pcast<vk::Device>(&init.device.device), {}, {&maxBuffer},
+                   max_code, nullptr, nullptr, 0, &push_size, 1);
+  /*Algorithm minAlg(pcast<vk::Device>(&init.device.device),
                    {&maxBuffer, &minBuffer}, min_code, nullptr, nullptr, 0,
-                   &push_size, 1);
+                   &push_size, 1);*/
 
   oneTimeSubmit(
       init.device.device, render_data.command_pool, render_data.graphics_queue,
       [&](vk::CommandBuffer cB) {
-        std::array<u32, 20> strides = {0};
         cB.bindPipeline(vk::PipelineBindPoint::eCompute, maxAlg.m_Pipeline);
         cB.bindDescriptorSets(vk::PipelineBindPoint::eCompute,
                               maxAlg.m_PipelineLayout, 0,
-                              maxAlg.m_DescriptorSet, 0u);
-        while (stride < values.size()) {
+                              maxAlg.m_DescriptorSet, nullptr);
+        const u32 n_iters = uintlog2(values.size()) + 1;
+        std::cout << n_iters << '\n';
+        std::vector<u32> strides(n_iters);
+        for (u32 i = 0; i < n_iters; i++) {
+          strides[i] = pow(2, i + 1);
         }
-        cB.pushConstants(maxAlg.m_PipelineLayout,
-                         vk::ShaderStageFlagBits::eCompute, 0, 4, &stride);
+        for (const auto& stride : strides) {
+          cB.pushConstants(maxAlg.m_PipelineLayout,
+                           vk::ShaderStageFlagBits::eCompute, 0, 4, &stride);
+          std::cout << "values.size() is: " << values.size()
+                    << ", stride is: " << stride << '\n';
+          u32 disp_count = values.size() / (64 * stride);
+          std::cout << disp_count << '\n';
+          cB.dispatch(std::clamp(disp_count, 1u, UINT32_MAX), 1, 1);
+          cB.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader,
+                             vk::PipelineStageFlagBits::eComputeShader, {},
+                             vk::MemoryBarrier(vk::AccessFlagBits::eMemoryWrite,
+                                               vk::AccessFlagBits::eMemoryRead),
+                             nullptr, nullptr);
+        }
       });
+  bufferToVec(init, maxBuffer, values);
+  std::cout << values[0] << '\n';
 
+  auto timerstart = std::chrono::steady_clock::now();
   bool running = true;
   while (running) {
     SDL_Event event;
@@ -1132,6 +1193,9 @@ int main(int argc, char* argv[]) {
           (event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED &&
            event.window.windowID == SDL_GetWindowID(init.window))) {
         running = false;
+        timerstart = std::chrono::steady_clock::now();
+        std::cout << "Closing!\n";
+        break;
       }
       if (SDL_GetWindowFlags(init.window) & SDL_WINDOW_MINIMIZED) {
         SDL_Delay(10);
@@ -1149,5 +1213,12 @@ int main(int argc, char* argv[]) {
   vmaDestroyBuffer(init.allocator, minBuffer.buffer, minBuffer.allocation);
   vmaDestroyBuffer(init.allocator, maxBuffer.buffer, maxBuffer.allocation);
   cleanup(init, render_data);
+  // Seems the timer doesn't actually measure how long it took the window to
+  // close.
+  auto end = std::chrono::steady_clock::now();
+  std::cout << "Shutdown took: "
+            << std::chrono::duration_cast<std::chrono::milliseconds>(end -
+                                                                     timerstart)
+            << "\n";
   return 0;
 }

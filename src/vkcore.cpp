@@ -62,18 +62,24 @@ void AllocatedImage::allocate(VmaAllocator& allocator,
                  &allocation, &aInfo);
 }
 
-Algorithm::Algorithm(vk::Device* device, std::vector<MetaBuffer*> buffers,
+Algorithm::Algorithm(vk::Device* device,
+                     const std::vector<vk::ImageView>& img_views,
+                     const std::vector<MetaBuffer*>& buffers,
                      const std::vector<u32>& spirv, const u8* specConsts,
                      const u32* sizes, size_t nConsts, const u32* pushSizes,
                      size_t nPushConstants) {
-  p_Device = device;
-  p_Buffer = buffers;
+  p_device = device;
   vk::ShaderModuleCreateInfo shaderMCI(vk::ShaderModuleCreateFlags(), spirv);
   m_ShaderModule = device->createShaderModule(shaderMCI);
-  std::vector<vk::DescriptorSetLayoutBinding> dSLBs;
-  for (u32 i = 0; i < buffers.size(); i++) {
-    dSLBs.emplace_back(i, vk::DescriptorType::eStorageBuffer, 1,
-                       vk::ShaderStageFlagBits::eCompute);
+  std::vector<vk::DescriptorSetLayoutBinding> dSLBs(img_views.size() +
+                                                    buffers.size());
+  for (u32 i = 0; i < img_views.size(); i++) {
+    dSLBs[i] = {i, vk::DescriptorType::eStorageImage, 1,
+                vk::ShaderStageFlagBits::eCompute};
+  }
+  for (u32 i = img_views.size(); i < buffers.size() + img_views.size(); i++) {
+    dSLBs[i] = {i, vk::DescriptorType::eStorageBuffer, 1,
+                vk::ShaderStageFlagBits::eCompute};
   }
   vk::DescriptorSetLayoutCreateInfo dSLCI(vk::DescriptorSetLayoutCreateFlags(),
                                           dSLBs);
@@ -128,25 +134,35 @@ Algorithm::Algorithm(vk::Device* device, std::vector<MetaBuffer*> buffers,
   vk::DescriptorSetAllocateInfo dSAI(m_DescriptorPool, 1, &m_DSL);
   auto descriptorSets = device->allocateDescriptorSets(dSAI);
   m_DescriptorSet = descriptorSets[0];
-  std::vector<vk::DescriptorBufferInfo> dBIs;
-  for (const auto& b : buffers) {
-    dBIs.emplace_back(b->buffer, 0, b->aInfo.size);
+  std::vector<vk::DescriptorImageInfo> dIIs(img_views.size());
+  std::vector<vk::DescriptorBufferInfo> dBIs(buffers.size());
+  for (size_t i = 0; i < dIIs.size(); i++) {
+    dIIs[i] = {{}, img_views[i], vk::ImageLayout::eGeneral};
   }
-  std::vector<vk::WriteDescriptorSet> writeDescriptorSets;
-  for (uint32_t i = 0; i < dBIs.size(); i++) {
-    writeDescriptorSets.emplace_back(m_DescriptorSet, i, 0, 1,
-                                     vk::DescriptorType::eStorageBuffer,
-                                     nullptr, &dBIs[i]);
+  for (size_t i = 0; i < dBIs.size(); i++) {
+    dBIs[i] =
+        vk::DescriptorBufferInfo(buffers[i]->buffer, 0, buffers[i]->aInfo.size);
+  }
+  std::vector<vk::WriteDescriptorSet> writeDescriptorSets(img_views.size() +
+                                                          dBIs.size());
+  for (u32 i = 0; i < dIIs.size(); i++) {
+    writeDescriptorSets[i] = {m_DescriptorSet, i, 0,
+                              vk::DescriptorType::eStorageImage, dIIs[i]};
+  }
+  for (uint32_t i = dIIs.size(); i < dIIs.size() + dBIs.size(); i++) {
+    writeDescriptorSets[i] = {
+        m_DescriptorSet, i,       0, 1, vk::DescriptorType::eStorageBuffer,
+        nullptr,         &dBIs[i]};
   }
   device->updateDescriptorSets(writeDescriptorSets, {});
 }
 
 Algorithm::~Algorithm() {
-  p_Device->destroyDescriptorSetLayout(m_DSL);
-  p_Device->destroyDescriptorPool(m_DescriptorPool);
-  p_Device->destroyShaderModule(m_ShaderModule);
-  p_Device->destroyPipeline(m_Pipeline);
-  p_Device->destroyPipelineLayout(m_PipelineLayout);
+  p_device->destroyDescriptorSetLayout(m_DSL);
+  p_device->destroyDescriptorPool(m_DescriptorPool);
+  p_device->destroyShaderModule(m_ShaderModule);
+  p_device->destroyPipeline(m_Pipeline);
+  p_device->destroyPipelineLayout(m_PipelineLayout);
 }
 
 /*std::ostream& operator<<(std::ostream& os, const SimConstants& obj) {

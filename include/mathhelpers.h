@@ -75,6 +75,12 @@ void writeBinary(std::string filename, std::span<T> span) {
   file.close();
 }
 
+static inline u32 uintlog2(const u32 x) {
+  uint32_t y;
+  asm("\tbsr %1, %0\n" : "=r"(y) : "r"(x));
+  return y;
+}
+
 /*template <class T, u32 C, u32 R>
 struct small_mat {
   std::array<T, R * C> buffer;
