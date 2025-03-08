@@ -1,12 +1,15 @@
 #version 440
 
-layout(binding = 0) uniform coherent restrict image2D outImage;
+layout(binding = 0) uniform writeonly coherent restrict image2D outImage;
+layout(std430, binding = 1) readonly buffer Colors { vec4 map[256]; };
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
-const float PI = 3.14159265359878;
+uint square(uint x) { return x * x; }
 
 void main() {
   ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
-  imageStore(outImage, coord, vec4(0.5f, 0.5, 0.0, 1.0));
+  uint idx =
+      (square(gl_GlobalInvocationID.x) + square(gl_GlobalInvocationID.y)) % 256;
+  imageStore(outImage, coord, map[idx]);
 }

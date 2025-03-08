@@ -7,11 +7,86 @@
 #define VMA_IMPLEMENTATION 1003000
 #include "SDL3/SDL.h"
 #include "SDL3/SDL_vulkan.h"
+#include "colormaps.hpp"
 #include "vk_mem_alloc.h"
 #include "vkcore.h"
 #include <cstdint>
 #include <iostream>
 #include <set>
+
+constexpr size_t MAX_FRAMES_IN_FLIGHT = 2;
+static const char* BasePath = SDL_GetBasePath();
+
+u32 get_compute_queue_family_index(vk::PhysicalDevice phys_dev) {
+  auto queue_family_props = phys_dev.getQueueFamilyProperties();
+  auto index =
+      std::find_if(queue_family_props.begin(), queue_family_props.end(),
+                   [](vk::QueueFamilyProperties qfp) {
+                     return qfp.queueFlags & vk::QueueFlagBits::eCompute;
+                   });
+  return std::distance(queue_family_props.begin(), index);
+}
+
+std::array<u32, 2>
+get_graphics_present_queue_family_indices(vk::PhysicalDevice phys_dev,
+                                          vk::SurfaceKHR surface) {
+  auto queueFamilyProps = phys_dev.getQueueFamilyProperties();
+  u32 gQFI = UINT32_MAX;
+  u32 pQFI = UINT32_MAX;
+  for (u32 i = 0; i < queueFamilyProps.size(); i++) {
+    if (queueFamilyProps[i].queueFlags & vk::QueueFlagBits::eGraphics) {
+      gQFI = i;
+    }
+    if (phys_dev.getSurfaceSupportKHR(i, surface)) {
+      pQFI = i;
+    }
+  }
+  if (gQFI == UINT32_MAX) {
+    runtime_exc("Fatal: Unable to find graphics queue family index.");
+  }
+  if (pQFI == UINT32_MAX) {
+    runtime_exc("Fatal: Unable to find present queue family index.");
+  }
+  return {gQFI, pQFI};
+}
+
+void record_drawing_command_buffers(
+    vk::Device dev, vk::CommandPool command_pool,
+    const std::vector<vk::Framebuffer>& framebuffers,
+    vk::RenderPass render_pass, vk::Extent2D swap_extent, u32 n_images,
+    vk::Pipeline graphics_pipeline, vk::PipelineLayout gpl,
+    vk::DescriptorSet descriptor_set, vk::Buffer vertex_buffer,
+    std::vector<vk::CommandBuffer>& command_buffers) {
+  vk::CommandBufferAllocateInfo cbAllocInfo(
+      command_pool, vk::CommandBufferLevel::ePrimary, n_images);
+  command_buffers.resize(n_images);
+  vkAllocateCommandBuffers(dev,
+                           pcast<VkCommandBufferAllocateInfo>(&cbAllocInfo),
+                           pcast<VkCommandBuffer>(command_buffers.data()));
+  for (u32 i = 0; i < n_images; i++) {
+    vk::CommandBufferBeginInfo info{};
+    command_buffers[i].begin(info);
+    vk::ClearValue clear{{1.0f, 1.0f, 1.0f, 1.0f}};
+    vk::RenderPassBeginInfo render_pass_info(
+        render_pass, framebuffers[i],
+        vk::Rect2D(vk::Offset2D(0, 0), swap_extent), clear);
+    vk::Viewport viewport(0.0f, 0.0f, (f32)swap_extent.width,
+                          (f32)swap_extent.height, 0.0f, 1.0f);
+    vk::Rect2D scissor(vk::Offset2D(0, 0), swap_extent);
+    command_buffers[i].setViewport(0, viewport);
+    command_buffers[i].setScissor(0, scissor);
+    command_buffers[i].beginRenderPass(render_pass_info,
+                                       vk::SubpassContents::eInline);
+    command_buffers[i].bindPipeline(vk::PipelineBindPoint::eGraphics,
+                                    graphics_pipeline);
+    command_buffers[i].bindDescriptorSets(vk::PipelineBindPoint::eGraphics, gpl,
+                                          0, descriptor_set, nullptr);
+    command_buffers[i].bindVertexBuffers(0, vertex_buffer, {0});
+    command_buffers[i].draw(6, 1, 0, 0);
+    command_buffers[i].endRenderPass();
+    command_buffers[i].end();
+  }
+}
 
 vk::SurfaceFormatKHR
 pickSurfaceFormat(const std::vector<vk::SurfaceFormatKHR>& formats) {
@@ -86,20 +161,24 @@ MetaBuffer::MetaBuffer() {
 MetaBuffer::MetaBuffer(VmaAllocator& allocator,
                        VmaAllocationCreateInfo& allocCreateInfo,
                        vk::BufferCreateInfo& BCI) {
+  p_allocator = &allocator;
   buffer = vk::Buffer{};
   allocation = VmaAllocation{};
   aInfo = VmaAllocationInfo{};
-  vmaCreateBuffer(allocator, reinterpret_cast<VkBufferCreateInfo*>(&BCI),
-                  &allocCreateInfo, reinterpret_cast<VkBuffer*>(&buffer),
-                  &allocation, &aInfo);
+  vmaCreateBuffer(allocator, pcast<VkBufferCreateInfo>(&BCI), &allocCreateInfo,
+                  pcast<VkBuffer>(&buffer), &allocation, &aInfo);
 }
 
 void MetaBuffer::allocate(VmaAllocator& allocator,
                           VmaAllocationCreateInfo& allocCreateInfo,
                           vk::BufferCreateInfo& BCI) {
-  vmaCreateBuffer(allocator, reinterpret_cast<VkBufferCreateInfo*>(&BCI),
-                  &allocCreateInfo, reinterpret_cast<VkBuffer*>(&buffer),
-                  &allocation, &aInfo);
+  p_allocator = &allocator;
+  vmaCreateBuffer(allocator, pcast<VkBufferCreateInfo>(&BCI), &allocCreateInfo,
+                  pcast<VkBuffer>(&buffer), &allocation, &aInfo);
+}
+
+MetaBuffer::~MetaBuffer() {
+  vmaDestroyBuffer(*p_allocator, buffer, allocation);
 }
 
 AllocatedImage::AllocatedImage() {
@@ -111,31 +190,36 @@ AllocatedImage::AllocatedImage() {
 AllocatedImage::AllocatedImage(VmaAllocator& allocator,
                                VmaAllocationCreateInfo& allocCreateInfo,
                                vk::ImageCreateInfo& BCI) {
+  p_allocator = &allocator;
   img = vk::Image{};
   allocation = VmaAllocation{};
   aInfo = VmaAllocationInfo{};
-  vmaCreateImage(allocator, reinterpret_cast<VkImageCreateInfo*>(&BCI),
-                 &allocCreateInfo, reinterpret_cast<VkImage*>(&img),
-                 &allocation, &aInfo);
+  vmaCreateImage(allocator, pcast<VkImageCreateInfo>(&BCI), &allocCreateInfo,
+                 pcast<VkImage>(&img), &allocation, &aInfo);
 }
 
 void AllocatedImage::allocate(VmaAllocator& allocator,
                               VmaAllocationCreateInfo& allocCreateInfo,
                               vk::ImageCreateInfo& BCI) {
+  p_allocator = &allocator;
   vmaCreateImage(allocator, reinterpret_cast<VkImageCreateInfo*>(&BCI),
                  &allocCreateInfo, reinterpret_cast<VkImage*>(&img),
                  &allocation, &aInfo);
 }
 
-Algorithm::Algorithm(vk::Device* device,
+AllocatedImage::~AllocatedImage() {
+  vmaDestroyImage(*p_allocator, img, allocation);
+}
+
+Algorithm::Algorithm(vk::Device device,
                      const std::vector<vk::ImageView>& img_views,
                      const std::vector<MetaBuffer*>& buffers,
                      const std::vector<u32>& spirv, const u8* specConsts,
                      const u32* sizes, size_t nConsts, const u32* pushSizes,
                      size_t nPushConstants) {
-  p_device = device;
+  m_device = device;
   vk::ShaderModuleCreateInfo shaderMCI(vk::ShaderModuleCreateFlags(), spirv);
-  m_ShaderModule = device->createShaderModule(shaderMCI);
+  m_ShaderModule = device.createShaderModule(shaderMCI);
   std::vector<vk::DescriptorSetLayoutBinding> dSLBs(img_views.size() +
                                                     buffers.size());
   for (u32 i = 0; i < img_views.size(); i++) {
@@ -148,7 +232,7 @@ Algorithm::Algorithm(vk::Device* device,
   }
   vk::DescriptorSetLayoutCreateInfo dSLCI(vk::DescriptorSetLayoutCreateFlags(),
                                           dSLBs);
-  m_DSL = device->createDescriptorSetLayout(dSLCI);
+  m_DSL = device.createDescriptorSetLayout(dSLCI);
   std::vector<vk::PushConstantRange> ranges(nPushConstants);
   u32 pushOffsets = 0;
   for (u32 i = 0; i < nPushConstants; i++) {
@@ -158,7 +242,7 @@ Algorithm::Algorithm(vk::Device* device,
   }
   vk::PipelineLayoutCreateInfo pLCI(vk::PipelineLayoutCreateFlags(), m_DSL,
                                     ranges);
-  m_PipelineLayout = device->createPipelineLayout(pLCI);
+  m_PipelineLayout = device.createPipelineLayout(pLCI);
   std::vector<vk::SpecializationMapEntry> specEntries(nConsts);
   // specConsts needs to have no gaps. This can be done with field ordering or,
   // if the field order is important, with a packing directive. Packing was
@@ -183,7 +267,7 @@ Algorithm::Algorithm(vk::Device* device,
                                          m_ShaderModule, "main", &specInfo);
   vk::ComputePipelineCreateInfo cPCI(vk::PipelineCreateFlags(), cSCI,
                                      m_PipelineLayout);
-  auto result = device->createComputePipeline({}, cPCI);
+  auto result = device.createComputePipeline({}, cPCI);
   m_Pipeline = result.value;
 
   // This is probably not the most efficient way to do this, but I'm not going
@@ -195,9 +279,9 @@ Algorithm::Algorithm(vk::Device* device,
       vk::DescriptorPoolCreateFlags(
           vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet),
       1, dPS);
-  m_DescriptorPool = device->createDescriptorPool(dPCI);
+  m_DescriptorPool = device.createDescriptorPool(dPCI);
   vk::DescriptorSetAllocateInfo dSAI(m_DescriptorPool, 1, &m_DSL);
-  auto descriptorSets = device->allocateDescriptorSets(dSAI);
+  auto descriptorSets = device.allocateDescriptorSets(dSAI);
   m_DescriptorSet = descriptorSets[0];
   std::vector<vk::DescriptorImageInfo> dIIs(img_views.size());
   std::vector<vk::DescriptorBufferInfo> dBIs(buffers.size());
@@ -208,26 +292,30 @@ Algorithm::Algorithm(vk::Device* device,
     dBIs[i] =
         vk::DescriptorBufferInfo(buffers[i]->buffer, 0, buffers[i]->aInfo.size);
   }
-  std::vector<vk::WriteDescriptorSet> writeDescriptorSets(img_views.size() +
+  std::vector<vk::WriteDescriptorSet> writeDescriptorSets(dIIs.size() +
                                                           dBIs.size());
   for (u32 i = 0; i < dIIs.size(); i++) {
     writeDescriptorSets[i] = {m_DescriptorSet, i, 0,
                               vk::DescriptorType::eStorageImage, dIIs[i]};
   }
-  for (uint32_t i = dIIs.size(); i < dIIs.size() + dBIs.size(); i++) {
-    writeDescriptorSets[i] = {
-        m_DescriptorSet, i,       0, 1, vk::DescriptorType::eStorageBuffer,
-        nullptr,         &dBIs[i]};
+  for (u32 i = dIIs.size(); i < dIIs.size() + dBIs.size(); i++) {
+    writeDescriptorSets[i] = {m_DescriptorSet,
+                              i,
+                              0,
+                              1,
+                              vk::DescriptorType::eStorageBuffer,
+                              nullptr,
+                              &dBIs[i - dIIs.size()]};
   }
-  device->updateDescriptorSets(writeDescriptorSets, {});
+  device.updateDescriptorSets(writeDescriptorSets, {});
 }
 
 Algorithm::~Algorithm() {
-  p_device->destroyDescriptorSetLayout(m_DSL);
-  p_device->destroyDescriptorPool(m_DescriptorPool);
-  p_device->destroyShaderModule(m_ShaderModule);
-  p_device->destroyPipeline(m_Pipeline);
-  p_device->destroyPipelineLayout(m_PipelineLayout);
+  m_device.destroyDescriptorSetLayout(m_DSL);
+  m_device.destroyDescriptorPool(m_DescriptorPool);
+  m_device.destroyShaderModule(m_ShaderModule);
+  m_device.destroyPipeline(m_Pipeline);
+  m_device.destroyPipelineLayout(m_PipelineLayout);
 }
 
 /*std::ostream& operator<<(std::ostream& os, const SimConstants& obj) {
@@ -350,15 +438,7 @@ std::set<std::string> get_supported_extensions() {
 
 static const std::string appName{"Vulkan GPE Simulator"};
 static const std::string engineName{"argablarg"};
-Manager::Manager(size_t stagingSize, std::string_view name, u32 flags) {
-  SDL_Init(SDL_INIT_VIDEO);
-  if (!SDL_Vulkan_LoadLibrary(nullptr)) {
-    SDL_Log("Unable to load Vulkan library: %s", SDL_GetError());
-  };
-  window = SDL_CreateWindow(name.data(), 640, 480, SDL_WINDOW_VULKAN | flags);
-  if (!window) {
-    SDL_Log("CreateWindow failed with error: %s", SDL_GetError());
-  }
+Manager::Manager(size_t stagingSize, SDL_Window* window = nullptr) {
   vk::ApplicationInfo appInfo{appName.c_str(), 1, engineName.c_str(), 1,
                               VK_API_VERSION_1_3};
   // Validation layers are extremely helpful, we'll only turn them off if we
@@ -384,21 +464,37 @@ Manager::Manager(size_t stagingSize, std::string_view name, u32 flags) {
     exit(-1);
   }
   physicalDevice = pickPhysicalDevice(instance);
-  if (!SDL_Vulkan_CreateSurface(window, instance, nullptr,
-                                bit_cast<VkSurfaceKHR*>(&surface))) {
-    SDL_Log("Couldn't create surface: %s", SDL_GetError());
+
+  std::vector<u32> qfis;
+  if (window) {
+    SDL_Vulkan_CreateSurface(window, instance, nullptr,
+                             pcast<VkSurfaceKHR>(&surface));
   }
-  getQueueFamilyIndices(surface);
+  qfis.push_back(get_compute_queue_family_index(physicalDevice));
+  if (window) {
+    auto gpqfis =
+        get_graphics_present_queue_family_indices(physicalDevice, surface);
+    if (gpqfis[0] == gpqfis[1]) {
+      if (qfis[0] != gpqfis[0]) {
+        qfis.push_back(gpqfis[0]);
+      }
+    } else {
+      if (qfis[0] != gpqfis[0]) {
+        qfis.push_back(gpqfis[0]);
+      }
+      if (qfis[0] != gpqfis[1]) {
+        qfis.push_back(gpqfis[1]);
+      }
+    }
+  }
+  cQFI = qfis[0];
+
   float queuePriority = 1.0f;
 
-  std::vector<vk::DeviceQueueCreateInfo> dQCI = {
-      {vk::DeviceQueueCreateFlags(), cQFI, 1, &queuePriority}};
-  if (gQFI != cQFI) {
-    dQCI.emplace_back(vk::DeviceQueueCreateFlags(), gQFI, 1, &queuePriority);
-  }
-  if (pQFI != cQFI && pQFI != cQFI) {
-    dQCI.emplace_back(vk::DeviceQueueCreateFlags(), pQFI, 1, &queuePriority);
-  }
+  std::vector<vk::DeviceQueueCreateInfo> dQCI(qfis.size());
+  std::transform(qfis.begin(), qfis.end(), dQCI.begin(), [&](u32 qfi) {
+    return vk::DeviceQueueCreateInfo({}, qfi, 1, &queuePriority);
+  });
   vk::PhysicalDeviceFeatures phys_dev_features;
   phys_dev_features.shaderFloat64 = vk::True;
   phys_dev_features.shaderInt64 = vk::True;
@@ -464,7 +560,8 @@ vk::CommandBuffer Manager::beginRecord(vk::CommandBufferUsageFlagBits bits) {
 }
 
 void Manager::writeToBuffer(MetaBuffer& dest, const void* source, size_t size) {
-  // Catch if we're trying to write more data than the staging buffer can store.
+  // Catch if we're trying to write more data than the staging buffer can
+  // store.
   if (size > stagingInfo.size) {
     vmaDestroyBuffer(allocator, staging, stagingAllocation);
     vk::BufferCreateInfo stagingBCI({}, size,
@@ -487,7 +584,8 @@ void Manager::writeToBuffer(MetaBuffer& dest, const void* source, size_t size) {
 }
 
 void Manager::writeFromBuffer(MetaBuffer& source, void* dest, size_t size) {
-  // Catch if we're trying to write more data than the staging buffer can store.
+  // Catch if we're trying to write more data than the staging buffer can
+  // store.
   if (size > stagingInfo.size) {
     vmaDestroyBuffer(allocator, staging, stagingAllocation);
     vk::BufferCreateInfo stagingBCI({}, size,
@@ -523,36 +621,14 @@ void Manager::executeNoSync(vk::CommandBuffer& b) {
 
 void Manager::queueWaitIdle() { queue.waitIdle(); }
 
-void Manager::getQueueFamilyIndices(vk::SurfaceKHR& surface) {
-  auto queueFamilyProps = physicalDevice.getQueueFamilyProperties();
-  for (u32 i = 0; i < queueFamilyProps.size(); i++) {
-    if (queueFamilyProps[i].queueFlags & vk::QueueFlagBits::eGraphics) {
-      gQFI = i;
-    }
-    if (queueFamilyProps[i].queueFlags & vk::QueueFlagBits::eCompute) {
-      cQFI = i;
-    }
-    if (physicalDevice.getSurfaceSupportKHR(i, surface)) {
-      pQFI = i;
-    }
-  }
-  if (cQFI == UINT32_MAX) {
-    runtime_exc("Fatal: Unable to find compute queue family index.");
-  }
-  if (gQFI == UINT32_MAX || pQFI == UINT32_MAX) {
-    std::cout << "Warning: Unable to find graphics/present queue, not showing "
-                 "any output."
-              << std::endl;
-  }
-}
-
 Algorithm Manager::makeAlgorithmRaw(std::string spirvname,
-                                    std::vector<MetaBuffer*> buffers,
+                                    const std::vector<vk::ImageView>& images,
+                                    const std::vector<MetaBuffer*>& buffers,
                                     const u8* specConsts, const u32* sizes,
                                     size_t nConsts, const u32* pushSizes,
                                     size_t nPushConstants) {
   const auto spirv = readFile<u32>(spirvname);
-  return Algorithm(&device, buffers, spirv, specConsts, sizes, nConsts,
+  return Algorithm(device, images, buffers, spirv, specConsts, sizes, nConsts,
                    pushSizes, nPushConstants);
 }
 
@@ -577,11 +653,11 @@ void appendOp(vk::CommandBuffer& b, Algorithm& a, u32 X, u32 Y, u32 Z) {
 Manager::~Manager() {
   device.waitIdle();
   device.destroyFence(fence);
+  instance.destroySurfaceKHR(surface);
   vmaDestroyBuffer(allocator, staging, stagingAllocation);
   vmaDestroyAllocator(allocator);
   device.destroyCommandPool(commandPool);
   device.destroy();
-  instance.destroySurfaceKHR(surface);
   instance.destroy();
 }
 
@@ -615,8 +691,8 @@ vk::SwapchainKHR create_swapchain(vk::Device device, vk::SurfaceKHR surface,
       vk::SharingMode::eExclusive, {}, pre_transform, composite_alpha,
       present_mode, true, old_swapchain);
   if (qfis[0] != qfis[1]) {
-    // If the graphics and present queues are from different queue families, we
-    // either have to explicitly transfer ownership of images between the
+    // If the graphics and present queues are from different queue families,
+    // we either have to explicitly transfer ownership of images between the
     // queues, or we have to create the swapchain with imageSharingMode as
     // VK_SHARING_MODE_CONCURRENT
     create_info.imageSharingMode = vk::SharingMode::eConcurrent;
@@ -642,26 +718,39 @@ create_image_views(vk::Device device, vk::SurfaceFormatKHR surface_format,
   return swapchain_image_views;
 }
 
-Renderer::Renderer(Manager* manager) {
-  p_mgr = manager;
+Renderer::Renderer(Manager& manager) {
+  p_mgr = &manager;
+  render_queue_indices = get_graphics_present_queue_family_indices(
+      manager.physicalDevice, manager.surface);
+  if (render_queue_indices[0] != render_queue_indices[1]) {
+    runtime_exc("Graphics queue is different from present queue, I don't want "
+                "to deal with that right now!");
+  }
+  graphicsQueue = manager.device.getQueue(render_queue_indices[0], 0);
+  presentQueue = manager.device.getQueue(render_queue_indices[1], 0);
   capabilities =
-      p_mgr->physicalDevice.getSurfaceCapabilitiesKHR(p_mgr->surface);
-  auto formats = p_mgr->physicalDevice.getSurfaceFormatsKHR(p_mgr->surface);
+      manager.physicalDevice.getSurfaceCapabilitiesKHR(manager.surface);
+  auto formats = manager.physicalDevice.getSurfaceFormatsKHR(manager.surface);
   if (formats.empty()) {
     runtime_exc("Fatal: No surface formats found");
   }
   surface_format = pickSurfaceFormat(formats);
   auto presentModes =
-      p_mgr->physicalDevice.getSurfacePresentModesKHR(p_mgr->surface);
+      manager.physicalDevice.getSurfacePresentModesKHR(manager.surface);
   if (presentModes.empty()) {
     runtime_exc("Fatal: No present modes found");
   }
+  vk::CommandPoolCreateInfo commandPoolCreateInfo(vk::CommandPoolCreateFlags(),
+                                                  render_queue_indices[0]);
+  command_pool = manager.device.createCommandPool(commandPoolCreateInfo);
+
   present_mode = chooseSwapPresentMode(presentModes);
-  vk::Extent2D newExtent;
   if (capabilities.currentExtent.width ==
       std::numeric_limits<uint32_t>::max()) {
     s32 width, height;
-    SDL_GetWindowSize(p_mgr->window, &width, &height);
+    SDL_GetWindowSize(manager.window, &width, &height);
+    std::cout << "Width is: " << width << '\n';
+    std::cout << "height is: " << height << '\n';
     u32 uwidth = (u32)width;
     u32 uheight = (u32)height;
     swapChainExtent.width =
@@ -679,19 +768,9 @@ Renderer::Renderer(Manager* manager) {
                                         capabilities.minImageExtent.height,
                                         capabilities.maxImageExtent.height);
   }
-  if (capabilities.currentExtent.width ==
-      std::numeric_limits<uint32_t>::max()) {
-    swapChainExtent.width =
-        std::clamp(swapChainExtent.width, capabilities.minImageExtent.width,
-                   capabilities.maxImageExtent.width);
-    swapChainExtent.height =
-        std::clamp(swapChainExtent.height, capabilities.minImageExtent.height,
-                   capabilities.maxImageExtent.height);
-  } else {
-    newExtent = capabilities.currentExtent;
-  }
+
   n_images =
-      std::clamp(3u, capabilities.minImageCount, capabilities.maxImageCount);                                                   : 1;
+      std::clamp(3u, capabilities.minImageCount, capabilities.maxImageCount);
   vk::SurfaceTransformFlagBitsKHR pre_transform =
       (capabilities.supportedTransforms &
        vk::SurfaceTransformFlagBitsKHR::eIdentity)
@@ -699,35 +778,11 @@ Renderer::Renderer(Manager* manager) {
           : capabilities.currentTransform;
   capabilities.currentTransform = pre_transform;
 
-  vk::CompositeAlphaFlagBitsKHR composite_alpha =
-      (capabilities.supportedCompositeAlpha &
-       vk::CompositeAlphaFlagBitsKHR::ePreMultiplied)
-          ? vk::CompositeAlphaFlagBitsKHR::ePreMultiplied
-      : (capabilities.supportedCompositeAlpha &
-         vk::CompositeAlphaFlagBitsKHR::ePostMultiplied)
-          ? vk::CompositeAlphaFlagBitsKHR::ePostMultiplied
-      : (capabilities.supportedCompositeAlpha &
-         vk::CompositeAlphaFlagBitsKHR::eInherit)
-          ? vk::CompositeAlphaFlagBitsKHR::eInherit
-          : vk::CompositeAlphaFlagBitsKHR::eOpaque;
+  swapchain = create_swapchain(manager.device, manager.surface, capabilities,
+                               surface_format, present_mode, swapChainExtent,
+                               n_images, render_queue_indices);
 
-  vk::SwapchainCreateInfoKHR create_info(
-      {}, p_mgr->surface, n_images, surface_format.format,
-      surface_format.colorSpace, newExtent, 1,
-      vk::ImageUsageFlagBits::eColorAttachment, vk::SharingMode::eExclusive, {},
-      pre_transform, composite_alpha, present_mode, true, nullptr);
-  std::array<u32, 2> qfi = {p_mgr->gQFI, p_mgr->pQFI};
-  if (qfi[0] != qfi[1]) {
-    // If the graphics and present queues are from different queue families, we
-    // either have to explicitly transfer ownership of images between the
-    // queues, or we have to create the swapchain with imageSharingMode as
-    // VK_SHARING_MODE_CONCURRENT
-    create_info.imageSharingMode = vk::SharingMode::eConcurrent;
-    create_info.queueFamilyIndexCount = 2;
-    create_info.pQueueFamilyIndices = qfi.data();
-  }
-  swapchain = p_mgr->device.createSwapchainKHR(create_info);
-  swapChainImages = p_mgr->device.getSwapchainImagesKHR(swapchain);
+  swapChainImages = manager.device.getSwapchainImagesKHR(swapchain);
   swapChainImageViews.reserve(swapChainImages.size());
   vk::ImageViewCreateInfo img_view_create_info(
       {}, {}, vk::ImageViewType::e2D, surface_format.format, {},
@@ -735,12 +790,11 @@ Renderer::Renderer(Manager* manager) {
   for (auto img : swapChainImages) {
     img_view_create_info.image = img;
     swapChainImageViews.push_back(
-        p_mgr->device.createImageView(img_view_create_info));
+        manager.device.createImageView(img_view_create_info));
   }
 
   vk::AttachmentDescription color_attachment(
-      vk::AttachmentDescriptionFlags(),
-      static_cast<vk::Format>(swapChainImageFormat),
+      vk::AttachmentDescriptionFlags(), surface_format.format,
       vk::SampleCountFlagBits::e1, vk::AttachmentLoadOp::eClear,
       vk::AttachmentStoreOp::eStore, vk::AttachmentLoadOp::eDontCare,
       vk::AttachmentStoreOp::eDontCare, vk::ImageLayout::eUndefined,
@@ -765,13 +819,277 @@ Renderer::Renderer(Manager* manager) {
   vk::RenderPassCreateInfo render_pass_info({}, color_attachment, subpass,
                                             dependency);
 
-  renderPass = p_mgr->device.createRenderPass(render_pass_info);
+  renderPass = manager.device.createRenderPass(render_pass_info);
   swapChainFrameBuffers = create_framebuffers(
-      p_mgr->device, swapChainImageViews, renderPass, swapChainExtent);
+      manager.device, swapChainImageViews, renderPass, swapChainExtent);
+
+  auto vert_code =
+      readFile<u32>(std::string(BasePath) + "Shaders/TexturedQuad.vert.spv");
+  auto frag_code =
+      readFile<u32>(std::string(BasePath) + "Shaders/TexturedQuad.frag.spv");
+
+  vk::ShaderModuleCreateInfo vert_MCI(vk::ShaderModuleCreateFlags(), vert_code);
+  vk::ShaderModule vert_module = manager.device.createShaderModule(vert_MCI);
+  vk::ShaderModuleCreateInfo frag_MCI(vk::ShaderModuleCreateFlags(), frag_code);
+  vk::ShaderModule frag_module = manager.device.createShaderModule(frag_MCI);
+  if (vert_module == VK_NULL_HANDLE) {
+    runtime_exc("Failed to create vertex module");
+  }
+  if (frag_module == VK_NULL_HANDLE) {
+    runtime_exc("Failed to create frag module");
+  }
+
+  vk::PipelineShaderStageCreateInfo vert_stage_info(
+      vk::PipelineShaderStageCreateFlags(), vk::ShaderStageFlagBits::eVertex,
+      vert_module, "main");
+
+  vk::PipelineShaderStageCreateInfo frag_stage_info(
+      vk::PipelineShaderStageCreateFlags(), vk::ShaderStageFlagBits::eFragment,
+      frag_module, "main");
+  vk::PipelineShaderStageCreateInfo shader_stages[] = {vert_stage_info,
+                                                       frag_stage_info};
+
+  auto vertex_binding = PositionTextureVertex::bindingDscr();
+  auto attr = PositionTextureVertex::attributeDscr();
+  vk::PipelineVertexInputStateCreateInfo vertex_input_info(
+      vk::PipelineVertexInputStateCreateFlags(), vertex_binding, attr);
+
+  vk::PipelineInputAssemblyStateCreateInfo input_assembly(
+      vk::PipelineInputAssemblyStateCreateFlags(),
+      vk::PrimitiveTopology::eTriangleList);
+  vk::Viewport viewport(0.0, 0.0, (f32)swapChainExtent.width,
+                        (f32)swapChainExtent.height, 0.0f, 1.0f);
+
+  vk::Rect2D scissor(vk::Offset2D(0, 0), swapChainExtent);
+
+  vk::PipelineViewportStateCreateInfo viewport_state(
+      vk::PipelineViewportStateCreateFlags(), 1, &viewport, 1, &scissor);
+  vk::PipelineRasterizationStateCreateInfo rasterizer(
+      vk::PipelineRasterizationStateCreateFlags(),
+      false,                       // depthClampEnable
+      false,                       // rasterizerDiscardEnable
+      vk::PolygonMode::eFill,      // polygonMode
+      vk::CullModeFlagBits::eBack, // cullMode
+      vk::FrontFace::eClockwise,   // frontFace
+      false,                       // depthBiasEnable
+      0.0f,                        // depthBiasConstantFactor
+      0.0f,                        // depthBiasClamp
+      0.0f,                        // depthBiasSlopeFactor
+      1.0f                         // lineWidth
+  );
+
+  vk::PipelineMultisampleStateCreateInfo multisampling(
+      vk::PipelineMultisampleStateCreateFlags(), // flags
+      vk::SampleCountFlagBits::e1                // rasterizationSamples
+                                                 // other values can be default
+  );
+
+  vk::ColorComponentFlags colorComponentFlags(
+      vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
+      vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA);
+  vk::PipelineColorBlendAttachmentState colorBlendAttachment(
+      false,                  // blendEnable
+      vk::BlendFactor::eZero, // srcColorBlendFactor
+      vk::BlendFactor::eZero, // dstColorBlendFactor
+      vk::BlendOp::eAdd,      // colorBlendOp
+      vk::BlendFactor::eZero, // srcAlphaBlendFactor
+      vk::BlendFactor::eZero, // dstAlphaBlendFactor
+      vk::BlendOp::eAdd,      // alphaBlendOp
+      colorComponentFlags     // colorWriteMask
+  );
+
+  vk::PipelineColorBlendStateCreateInfo color_blending(
+      vk::PipelineColorBlendStateCreateFlags(), // flags
+      false,                                    // logicOpEnable
+      vk::LogicOp::eCopy,                       // logicOp
+      colorBlendAttachment,                     // attachments
+      {{1.0f, 1.0f, 1.0f, 1.0f}}                // blendConstants
+  );
+
+  vk::DescriptorSetLayoutBinding dsl_binding(
+      0, vk::DescriptorType::eCombinedImageSampler, 1,
+      vk::ShaderStageFlagBits::eFragment);
+  descriptorSetLayout = manager.device.createDescriptorSetLayout(
+      vk::DescriptorSetLayoutCreateInfo({}, dsl_binding));
+  vk::PipelineLayoutCreateInfo graphics_pipeline_layout_info{};
+  graphics_pipeline_layout_info.setSetLayouts(descriptorSetLayout);
+
+  graphicsPipelineLayout =
+      manager.device.createPipelineLayout(graphics_pipeline_layout_info);
+
+  std::vector<vk::DynamicState> dynamic_states = {vk::DynamicState::eViewport,
+                                                  vk::DynamicState::eScissor};
+
+  vk::PipelineDynamicStateCreateInfo dynamic_info(
+      vk::PipelineDynamicStateCreateFlags(), dynamic_states);
+
+  vk::GraphicsPipelineCreateInfo pipeline_info(
+      vk::PipelineCreateFlags(), shader_stages, &vertex_input_info,
+      &input_assembly, nullptr, &viewport_state, &rasterizer, &multisampling,
+      nullptr, &color_blending, &dynamic_info, graphicsPipelineLayout,
+      renderPass);
+
+  auto result = manager.device.createGraphicsPipeline({}, pipeline_info);
+  assert(result.result == vk::Result::eSuccess);
+  graphicsPipeline = result.value;
+  manager.device.destroyShaderModule(frag_module, nullptr);
+  manager.device.destroyShaderModule(vert_module, nullptr);
+
+  std::vector<PositionTextureVertex> vertices = {
+      {{-1.0f, -1.0f}, {0.0f, 0.0f}}, {{1.0f, -1.0f}, {1.0f, 0.0f}},
+      {{1.0f, 1.0f}, {1.0f, 1.0f}},   {{1.0f, 1.0f}, {1.0f, 1.0f}},
+      {{-1.0f, 1.0f}, {0.0f, 1.0f}},  {{-1.0f, -1.0f}, {0.0f, 0.0f}},
+  };
+  vk::BufferCreateInfo vertexBCI(
+      {}, vertices.size() * sizeof(PositionTextureVertex),
+      vk::BufferUsageFlagBits::eVertexBuffer |
+          vk::BufferUsageFlagBits::eTransferDst);
+  VmaAllocationCreateInfo allocCreateInfo{};
+  allocCreateInfo.usage = VMA_MEMORY_USAGE_AUTO;
+  allocCreateInfo.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
+  allocCreateInfo.priority = 1.0f;
+  vertexBuffer.allocate(manager.allocator, allocCreateInfo, vertexBCI);
+  manager.writeToBuffer(vertexBuffer, vertices);
+
+  vk::Format colormap_format = vk::Format::eR32G32B32A32Sfloat;
+  vk::ImageCreateInfo colormap_img_info(
+      {}, vk::ImageType::e2D, colormap_format,
+      vk::Extent3D(GRID_WIDTH, GRID_HEIGHT, 1), 1, 1,
+      vk::SampleCountFlagBits::e1, vk::ImageTiling::eLinear,
+      vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eStorage);
+  VmaAllocationCreateInfo img_alloc_create_info{};
+  img_alloc_create_info.usage = VMA_MEMORY_USAGE_AUTO;
+  img_alloc_create_info.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
+  allocCreateInfo.priority = 1.0f;
+  colormap_img.allocate(manager.allocator, img_alloc_create_info,
+                        colormap_img_info);
+  vk::ImageMemoryBarrier barrier{};
+  barrier.setOldLayout(vk::ImageLayout::eUndefined);
+  // On Nvidia there is really only the General image layout. On AMD General
+  // is compressed so you need to switch to a different layout for adequate
+  // performance there
+  barrier.setNewLayout(vk::ImageLayout::eGeneral);
+  barrier.setSrcQueueFamilyIndex(vk::QueueFamilyIgnored);
+  barrier.setDstQueueFamilyIndex(vk::QueueFamilyIgnored);
+  barrier.setImage(colormap_img.img);
+  barrier.setSubresourceRange({vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1});
+  barrier.setSrcAccessMask({});
+  barrier.setDstAccessMask(vk::AccessFlagBits::eShaderRead);
+  oneTimeSubmit(manager.device, manager.commandPool, manager.queue,
+                [&](vk::CommandBuffer b) {
+                  b.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader,
+                                    vk::PipelineStageFlagBits::eComputeShader,
+                                    {}, nullptr, nullptr, barrier);
+                });
+
+  vk::ImageViewCreateInfo view_info(
+      {}, colormap_img.img, vk::ImageViewType::e2D, colormap_format, {},
+      {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1});
+  colormap_view = manager.device.createImageView(view_info);
+
+  vk::BufferCreateInfo colormapBCI({}, 256 * sizeof(cm::AlignedColor),
+                                   vk::BufferUsageFlagBits::eStorageBuffer |
+                                       vk::BufferUsageFlagBits::eTransferDst);
+  colormap.allocate(manager.allocator, img_alloc_create_info, colormapBCI);
+  manager.writeToBuffer(colormap, cm::viridis.data(),
+                        cm::viridis.size() * sizeof(cm::AlignedColor));
+  vk::BufferCreateInfo valueBCI({}, GRID_HEIGHT * GRID_WIDTH * sizeof(f32),
+                                vk::BufferUsageFlagBits::eStorageBuffer |
+                                    vk::BufferUsageFlagBits::eTransferDst |
+                                    vk::BufferUsageFlagBits::eTransferSrc);
+  vk::BufferCreateInfo minmaxBCI(
+      {}, (GRID_HEIGHT * GRID_WIDTH * sizeof(f32) + 1) / 2,
+      vk::BufferUsageFlagBits::eStorageBuffer |
+          vk::BufferUsageFlagBits::eTransferDst |
+          vk::BufferUsageFlagBits::eTransferSrc);
+  value_buffer.allocate(manager.allocator, img_alloc_create_info, valueBCI);
+  minmax_buffer.allocate(manager.allocator, img_alloc_create_info, minmaxBCI);
+
+  first_max_reduction = manager.makeAlgorithmRaw(
+      std::string(BasePath) + "Shaders/firstmax.comp.spv", {},
+      {&value_buffer, &minmax_buffer});
+  first_min_reduction = manager.makeAlgorithmRaw(
+      std::string(BasePath) + "Shaders/firstmax.comp.spv", {},
+      {&value_buffer, &minmax_buffer});
+  u32 push_size = 4;
+  max_reduction = manager.makeAlgorithmRaw(
+      std::string(BasePath) + "Shaders/max.comp.spv", {}, {&minmax_buffer},
+      nullptr, nullptr, 0, &push_size, 1);
+  min_reduction = manager.makeAlgorithmRaw(
+      std::string(BasePath) + "Shaders/min.comp.spv", {}, {&minmax_buffer},
+      nullptr, nullptr, 0, &push_size, 1);
+  auto fill_colormap_alg = manager.makeAlgorithmRaw(
+      std::string(BasePath) + "Shaders/FillTexture.comp.spv", {colormap_view},
+      {&colormap});
+
+  auto cB = manager.beginRecord();
+  appendOp(cB, fill_colormap_alg, GRID_WIDTH / 8, GRID_HEIGHT / 8, 1);
+  cB.end();
+  manager.execute(cB);
+
+  barrier.setOldLayout(vk::ImageLayout::eGeneral);
+  barrier.setNewLayout(vk::ImageLayout::eShaderReadOnlyOptimal);
+  barrier.setSrcQueueFamilyIndex(manager.cQFI);
+  barrier.setDstQueueFamilyIndex(manager.cQFI);
+  barrier.setSrcAccessMask(vk::AccessFlagBits::eShaderRead);
+  barrier.setSrcAccessMask(vk::AccessFlagBits::eShaderWrite);
+  oneTimeSubmit(manager.device, manager.commandPool, manager.queue,
+                [&](vk::CommandBuffer b) {
+                  b.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader,
+                                    vk::PipelineStageFlagBits::eComputeShader,
+                                    {}, nullptr, nullptr, barrier);
+                });
+
+  vk::SamplerCreateInfo colormap_sampler_info(
+      vk::SamplerCreateFlags(), vk::Filter::eNearest, vk::Filter::eNearest,
+      vk::SamplerMipmapMode::eNearest, vk::SamplerAddressMode::eClampToEdge,
+      vk::SamplerAddressMode::eClampToEdge,
+      vk::SamplerAddressMode::eClampToEdge, 0.0f, false, 1.0f, false,
+      vk::CompareOp::eNever, 0.0f, 0.0f, vk::BorderColor::eFloatOpaqueWhite);
+  colormap_sampler = manager.device.createSampler(colormap_sampler_info);
+
+  vk::DescriptorPoolSize pool_size({}, MAX_FRAMES_IN_FLIGHT);
+  descriptorPool = manager.device.createDescriptorPool(
+      {vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet, n_images, 1,
+       &pool_size});
+
+  descriptorSet =
+      manager.device
+          .allocateDescriptorSets({descriptorPool, descriptorSetLayout})
+          .front();
+  vk::DescriptorImageInfo descriptor_img_info(
+      colormap_sampler, colormap_view, vk::ImageLayout::eShaderReadOnlyOptimal);
+  vk::WriteDescriptorSet descriptor_write(
+      descriptorSet, 0, 0, vk::DescriptorType::eCombinedImageSampler,
+      descriptor_img_info);
+  manager.device.updateDescriptorSets(descriptor_write, {});
+
+  imageAvailableSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
+  renderFinishedSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
+  inFlightFences.resize(MAX_FRAMES_IN_FLIGHT);
+  imageInFlightFences.resize(swapChainImages.size(), VK_NULL_HANDLE);
+
+  vk::SemaphoreCreateInfo semaphore_info{};
+
+  vk::FenceCreateInfo fence_info(vk::FenceCreateFlagBits::eSignaled);
+
+  for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+    imageAvailableSemaphores[i] =
+        manager.device.createSemaphore(semaphore_info);
+    renderFinishedSemaphores[i] =
+        manager.device.createSemaphore(semaphore_info);
+    inFlightFences[i] = manager.device.createFence(fence_info);
+  }
+
+  record_drawing_command_buffers(
+      p_mgr->device, command_pool, swapChainFrameBuffers, renderPass,
+      swapChainExtent, n_images, graphicsPipeline, graphicsPipelineLayout,
+      descriptorSet, vertexBuffer.buffer, commandBuffers);
 }
 
 void Renderer::cleanupSwapchain() {
-  vk::Device& dev = p_mgr->device;
+  vk::Device dev = p_mgr->device;
+  dev.destroyCommandPool(command_pool);
   for (auto& fb : swapChainFrameBuffers) {
     dev.destroyFramebuffer(fb);
   }
@@ -781,9 +1099,14 @@ void Renderer::cleanupSwapchain() {
   dev.destroySwapchainKHR(swapchain);
 }
 void Renderer::recreateSwapchain() {
+  p_mgr->device.waitIdle();
+  capabilities =
+      p_mgr->physicalDevice.getSurfaceCapabilitiesKHR(p_mgr->surface);
   if (capabilities.currentExtent.width ==
       std::numeric_limits<uint32_t>::max()) {
-    s32 width, height;
+    s32 width = 0, height = 0;
+    // GetWindowSize seems to just return 0 on linux for this version of SDL3,
+    // hopefully we never encounter this branch.
     SDL_GetWindowSize(p_mgr->window, &width, &height);
     u32 uwidth = (u32)width;
     u32 uheight = (u32)height;
@@ -804,150 +1127,93 @@ void Renderer::recreateSwapchain() {
   }
   vk::SwapchainKHR new_swapchain = create_swapchain(
       p_mgr->device, p_mgr->surface, capabilities, surface_format, present_mode,
-      swapChainExtent, n_images, {p_mgr->gQFI, p_mgr->pQFI}, swapchain);
+      swapChainExtent, n_images, render_queue_indices, swapchain);
   cleanupSwapchain();
   swapchain = new_swapchain;
   swapChainImages = p_mgr->device.getSwapchainImagesKHR(swapchain);
   swapChainImageViews =
       create_image_views(p_mgr->device, surface_format, swapChainImages);
+
+  vk::CommandPoolCreateInfo command_pool_info({}, render_queue_indices[0]);
+  swapChainFrameBuffers = create_framebuffers(
+      p_mgr->device, swapChainImageViews, renderPass, swapChainExtent);
+  command_pool = p_mgr->device.createCommandPool(command_pool_info);
+  record_drawing_command_buffers(
+      p_mgr->device, command_pool, swapChainFrameBuffers, renderPass,
+      swapChainExtent, n_images, graphicsPipeline, graphicsPipelineLayout,
+      descriptorSet, vertexBuffer.buffer, commandBuffers);
 };
 
-void Renderer::createSwapChain(const vk::SwapchainKHR& oldSwapChain) {
-  vk::SurfaceFormatKHR surfaceFormat =
-      pickSurfaceFormat(mgr->physicalDevice.getSurfaceFormatsKHR(surface));
-  swapChainImageFormat = surfaceFormat.format;
-  vk::SurfaceCapabilitiesKHR surfaceCapabilities =
-      mgr->physicalDevice.getSurfaceCapabilitiesKHR(surface);
-
-  if (surfaceCapabilities.currentExtent.width ==
-      std::numeric_limits<uint32_t>::max()) {
-    swapChainExtent.width = std::clamp(
-        swapChainExtent.width, surfaceCapabilities.minImageExtent.width,
-        surfaceCapabilities.maxImageExtent.width);
-    swapChainExtent.height = std::clamp(
-        swapChainExtent.height, surfaceCapabilities.minImageExtent.height,
-        surfaceCapabilities.maxImageExtent.height);
-  } else {
-    newExtent = surfaceCapabilities.currentExtent;
-  }
-  vk::SurfaceTransformFlagBitsKHR preTransform =
-      (surfaceCapabilities.supportedTransforms &
-       vk::SurfaceTransformFlagBitsKHR::eIdentity)
-          ? vk::SurfaceTransformFlagBitsKHR::eIdentity
-          : surfaceCapabilities.currentTransform;
-  vk::CompositeAlphaFlagBitsKHR compositeAlpha =
-      (surfaceCapabilities.supportedCompositeAlpha &
-       vk::CompositeAlphaFlagBitsKHR::ePreMultiplied)
-          ? vk::CompositeAlphaFlagBitsKHR::ePreMultiplied
-      : (surfaceCapabilities.supportedCompositeAlpha &
-         vk::CompositeAlphaFlagBitsKHR::ePostMultiplied)
-          ? vk::CompositeAlphaFlagBitsKHR::ePostMultiplied
-      : (surfaceCapabilities.supportedCompositeAlpha &
-         vk::CompositeAlphaFlagBitsKHR::eInherit)
-          ? vk::CompositeAlphaFlagBitsKHR::eInherit
-          : vk::CompositeAlphaFlagBitsKHR::eOpaque;
-  vk::SwapchainCreateInfoKHR createInfo(
-      {}, surface, surfaceCapabilities.minImageCount + 1, swapChainImageFormat,
-      surfaceFormat.colorSpace, newExtent, 1,
-      vk::ImageUsageFlags(vk::ImageUsageFlagBits::eColorAttachment |
-                          vk::ImageUsageFlagBits::eTransferSrc),
-      vk::SharingMode::eExclusive, {}, preTransform, compositeAlpha,
-      vk::PresentModeKHR::eFifo, true, oldSwapChain);
-  if (mgr->pQFI != mgr->gQFI) {
-    uint32_t queueFamilyIndices[2] = {mgr->gQFI, mgr->pQFI};
-    // If the graphics and present queues are from different queue families, we
-    // either have to explicitly transfer ownership of images between the
-    // queues, or we have to create the swapchain with imageSharingMode as
-    // vk::SharingMode::eConcurrent
-    createInfo.imageSharingMode = vk::SharingMode::eConcurrent;
-    createInfo.queueFamilyIndexCount = 2;
-    createInfo.pQueueFamilyIndices = queueFamilyIndices;
-  }
-  swapChain = mgr->device.createSwapchainKHR(createInfo);
-  swapChainImages = mgr->device.getSwapchainImagesKHR(swapChain);
-  swapChainImageViews.resize(swapChainImages.size());
-  vk::ImageViewCreateInfo iVCI({}, {}, vk::ImageViewType::e2D,
-                               swapChainImageFormat, {},
-                               {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1});
-  for (u32 i = 0; i < swapChainImageViews.size(); i++) {
-    iVCI.image = swapChainImages[i];
-    swapChainImageViews[i] = mgr->device.createImageView(iVCI);
-  }
-}
-
-void Renderer::recordCommandBuffer(vk::CommandBuffer& cB, u32 imageIndex) {
-  vk::CommandBufferBeginInfo cBBI;
-  cB.begin(cBBI);
-  std::array<vk::ClearValue, 2> clearValues;
-  clearValues[0].setColor({0.2f, 0.2f, 0.2f, 1.0f});
-  clearValues[1].setDepthStencil({1.0f, 0});
-  vk::RenderPassBeginInfo rPBI(renderPass, swapChainFrameBuffers[imageIndex],
-                               vk::Rect2D(vk::Offset2D(0, 0), swapChainExtent),
-                               clearValues);
-
-  cB.beginRenderPass(rPBI, vk::SubpassContents::eInline);
-  cB.bindPipeline(vk::PipelineBindPoint::eGraphics, graphicsPipeline);
-
-  cB.bindDescriptorSets(vk::PipelineBindPoint::eGraphics,
-                        graphicsPipelineLayout, 0, descriptorSet, nullptr);
-  cB.bindVertexBuffers(0, vertexBuffer.buffer, {0});
-  cB.setViewport(0, vk::Viewport(0.0f, 0.0f, swapChainExtent.width,
-                                 swapChainExtent.height, 0.0f, 1.0f));
-  cB.setScissor(0, vk::Rect2D(vk::Offset2D(0, 0), swapChainExtent));
-  cB.draw(6, 1, 0, 0);
-  cB.endRenderPass();
-  cB.end();
-}
 void Renderer::drawFrame() {
-  vk::Device& dev = mgr->device;
+  vk::Device dev = p_mgr->device;
   if (dev.waitForFences(inFlightFences[currentFrame], vk::True, -1) !=
       vk::Result::eSuccess) {
     runtime_exc("Failed waiting for fences");
   };
-  u32 imageIndex;
   vk::ResultValue<u32> res = dev.acquireNextImageKHR(
-      swapChain, UINT64_MAX, imageAvailableSemaphores[currentFrame], nullptr);
+      swapchain, UINT64_MAX, imageAvailableSemaphores[currentFrame], nullptr);
   if (res.result == vk::Result::eErrorOutOfDateKHR) {
+    std::cout << "Got out of date result";
     recreateSwapchain();
     return;
   } else if (res.result != vk::Result::eSuccess &&
              res.result != vk::Result::eSuboptimalKHR) {
     runtime_exc("Failed to acquire swap chain image!");
   }
+  u32 imageIndex = res.value;
 
-  dev.resetFences(inFlightFences[currentFrame]);
-  vk::CommandBuffer& cB = commandBuffers[currentFrame];
-  cB.reset();
-  recordCommandBuffer(cB, imageIndex);
+  if (imageInFlightFences[imageIndex] != nullptr) {
+    auto result =
+        dev.waitForFences(imageInFlightFences[imageIndex], vk::True, -1);
+    if (result != vk::Result::eSuccess) {
+      runtime_exc("Failed to wait on in flight image");
+    }
+  }
+  imageInFlightFences[imageIndex] = inFlightFences[currentFrame];
 
+  vk::Semaphore signal_semaphore = renderFinishedSemaphores[currentFrame];
   vk::PipelineStageFlags waitDestinationStageMask(
       vk::PipelineStageFlagBits::eColorAttachmentOutput);
+  vk::CommandBuffer cB = commandBuffers[imageIndex];
   vk::SubmitInfo submitInfo(imageAvailableSemaphores[currentFrame],
-                            waitDestinationStageMask, cB,
-                            renderFinishedSemaphores[currentFrame]);
+                            waitDestinationStageMask, cB, signal_semaphore);
+  dev.resetFences(inFlightFences[currentFrame]);
+
   graphicsQueue.submit(submitInfo, inFlightFences[currentFrame]);
-  auto result = presentQueue.presentKHR(
-      vk::PresentInfoKHR(renderFinishedSemaphores[currentFrame], swapChain));
-  if (result == vk::Result::eErrorOutOfDateKHR ||
-      result == vk::Result::eSuboptimalKHR || frameBufferResized) {
-    frameBufferResized = false;
+
+  vk::PresentInfoKHR pres_info(signal_semaphore, swapchain, imageIndex);
+  try {
+    if (vk::Result::eSuboptimalKHR == presentQueue.presentKHR(pres_info)) {
+      std::cout << "Recreating swapchain because of suboptimal\n";
+      recreateSwapchain();
+    }
+  } catch (vk::OutOfDateKHRError& out_of_date_error) {
     recreateSwapchain();
-  } else if (result != vk::Result::eSuccess) {
-    runtime_exc("Failed to present swap chain image!");
   }
 
-  currentFrame = (currentFrame + 1) % maxFramesInFlight;
+  currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
 }
 
 Renderer::~Renderer() {
-  vk::Device& dev = mgr->device;
-  dev.destroyPipeline(graphicsPipeline);
-  dev.destroyPipelineLayout(graphicsPipelineLayout);
-  dev.destroyRenderPass(renderPass, nullptr);
-  for (size_t i = 0; i < maxFramesInFlight; i++) {
+  vk::Device dev = p_mgr->device;
+  dev.waitIdle();
+  for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
     dev.destroySemaphore(imageAvailableSemaphores[i]);
     dev.destroySemaphore(renderFinishedSemaphores[i]);
     dev.destroyFence(inFlightFences[i]);
   }
-  mgr->instance.destroySurfaceKHR(surface);
+
+  for (size_t i = 0; i < n_images; i++) {
+    dev.destroyFramebuffer(swapChainFrameBuffers[i]);
+    dev.destroyImageView(swapChainImageViews[i]);
+  }
+  dev.destroyCommandPool(command_pool);
+  dev.destroyDescriptorPool(descriptorPool);
+  dev.destroyDescriptorSetLayout(descriptorSetLayout);
+  dev.destroySampler(colormap_sampler);
+  dev.destroyImageView(colormap_view);
+  dev.destroySwapchainKHR(swapchain);
+  dev.destroyPipeline(graphicsPipeline);
+  dev.destroyPipelineLayout(graphicsPipelineLayout);
+  dev.destroyRenderPass(renderPass);
 }

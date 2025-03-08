@@ -11,8 +11,27 @@
 #include <cstddef>
 #include <format>
 #include <fstream>
+#include <span>
 
 using std::bit_cast;
+
+constexpr u32 GRID_WIDTH = 256;
+constexpr u32 GRID_HEIGHT = 256;
+
+struct PositionTextureVertex {
+  vec2<f32> pos;
+  vec2<f32> uv;
+
+  static vk::VertexInputBindingDescription bindingDscr() {
+    return {0, sizeof(PositionTextureVertex), vk::VertexInputRate::eVertex};
+  }
+  static std::array<vk::VertexInputAttributeDescription, 2> attributeDscr() {
+    return {{{0, 0, vk::Format::eR32G32Sfloat,
+              offsetof(PositionTextureVertex, pos)},
+             {1, 0, vk::Format::eR32G32Sfloat,
+              offsetof(PositionTextureVertex, uv)}}};
+  }
+};
 
 template <typename T>
 std::vector<T> readFile(const std::string& filename) {
@@ -77,6 +96,7 @@ const vk::MemoryBarrier fullMemoryBarrier(vk::AccessFlagBits::eMemoryWrite,
 struct MetaBuffer {
   // A buffer + allocation stuff that you generally need to reference when using
   // vk::Buffers. Also destroys itself automatically.
+  VmaAllocator* p_allocator = nullptr;
   vk::Buffer buffer;
   VmaAllocation allocation;
   VmaAllocationInfo aInfo;
@@ -87,9 +107,11 @@ struct MetaBuffer {
   void allocate(VmaAllocator& allocator,
                 VmaAllocationCreateInfo& allocCreateInfo,
                 vk::BufferCreateInfo& BCI);
+  ~MetaBuffer();
 };
 
 struct AllocatedImage {
+  VmaAllocator* p_allocator = nullptr;
   vk::Image img;
   VmaAllocation allocation;
   VmaAllocationInfo aInfo;
@@ -100,6 +122,7 @@ struct AllocatedImage {
   void allocate(VmaAllocator& allocator,
                 VmaAllocationCreateInfo& allocCreateInfo,
                 vk::ImageCreateInfo& iCI);
+  ~AllocatedImage();
 };
 
 struct SSBO430 {
@@ -109,15 +132,18 @@ struct SSBO430 {
 };
 
 struct Algorithm {
-  // We want to have this pointer for automatic destruction
-  vk::Device* p_device;
+  // Attention, device is used for destroying owned objects, the device will be
+  // destroyed by the manager.
+  vk::Device m_device;
+  // owned
   vk::DescriptorSetLayout m_DSL;
   vk::DescriptorPool m_DescriptorPool;
   vk::DescriptorSet m_DescriptorSet;
   vk::ShaderModule m_ShaderModule;
   vk::PipelineLayout m_PipelineLayout;
   vk::Pipeline m_Pipeline;
-  Algorithm(vk::Device* device, const std::vector<vk::ImageView>& img_views,
+  Algorithm() = default;
+  Algorithm(vk::Device device, const std::vector<vk::ImageView>& img_views,
             const std::vector<MetaBuffer*>& buffers,
             const std::vector<u32>& spirv, const u8* specConsts = nullptr,
             const u32* sizes = nullptr, size_t nConsts = 0,
@@ -139,23 +165,21 @@ static const std::vector<std::string> deviceExtensions = {
     vk::KHRSwapchainExtensionName};
 
 struct Manager {
-  SDL_Window* window;
   vk::Instance instance;
   vk::PhysicalDevice physicalDevice;
   vk::Device device;
   vk::Queue queue;
   vk::Fence fence;
-  vk::SurfaceKHR surface;
   VmaAllocator allocator;
   vk::Buffer staging;
   VmaAllocation stagingAllocation;
   VmaAllocationInfo stagingInfo;
   u32 cQFI = UINT32_MAX;
-  u32 gQFI = UINT32_MAX;
-  u32 pQFI = UINT32_MAX;
   vk::CommandPool commandPool;
+  SDL_Window* window;
+  vk::SurfaceKHR surface;
 
-  Manager(size_t stagingSize, std::string_view name, u32 flags);
+  Manager(size_t stagingSize, SDL_Window* window);
   void finishSetup(size_t stagingSize, vk::SurfaceKHR& surface);
   // Manager uses a single staging buffer for efficient copies.
   void copyBuffer(vk::Buffer& srcBuffer, vk::Buffer& dstBuffer, u32 bufferSize);
@@ -169,7 +193,7 @@ struct Manager {
   void getQueueFamilyIndices(vk::SurfaceKHR& surface);
   void writeToBuffer(MetaBuffer& buffer, const void* input, size_t size);
   template <class T>
-  void writeToBuffer(MetaBuffer& buffer, const std::vector<T>& vec) {
+  void writeToBuffer(MetaBuffer& buffer, std::vector<T> vec) {
     writeToBuffer(buffer, vec.data(), vec.size() * sizeof(T));
   }
   void writeFromBuffer(MetaBuffer& buffer, void* output, size_t size);
@@ -233,19 +257,20 @@ struct Manager {
     return buffer;
   }
   Algorithm makeAlgorithmRaw(std::string spirvname,
-                             std::vector<MetaBuffer*> buffers,
+                             const std::vector<vk::ImageView>& images,
+                             const std::vector<MetaBuffer*>& buffers,
                              const u8* specConsts = nullptr,
                              const u32* specConstOffsets = nullptr,
                              size_t nConsts = 0, const u32* pushSizes = nullptr,
                              size_t nPushConstants = 0);
   template <class T>
-  Algorithm makeAlgorithm(std::string spirvname,
-                          std::vector<MetaBuffer*> buffers,
-                          const T& specConsts) {
+  Algorithm
+  makeAlgorithm(std::string spirvname, const std::vector<vk::ImageView>& images,
+                std::vector<MetaBuffer*> buffers, const T& specConsts) {
     constexpr auto sizes = struct_field_sizes<T>();
     constexpr auto n_fields = sizes.size();
     std::cout << "Detected " << n_fields << " specialization constants.";
-    return makeAlgorithmRaw(spirvname, buffers,
+    return makeAlgorithmRaw(spirvname, images, buffers,
                             bit_cast<const u8*>(&specConsts), sizes.data(),
                             sizes.size());
   }
@@ -291,7 +316,6 @@ struct Manager {
 struct Renderer {
   // non-owned
   Manager* p_mgr;
-  // SDL_Window* window;
   //  owned
   vk::RenderPass renderPass;
   vk::Pipeline graphicsPipeline;
@@ -301,28 +325,39 @@ struct Renderer {
   std::vector<vk::Image> swapChainImages;
   vk::Format swapChainImageFormat;
   vk::Extent2D swapChainExtent;
+  std::array<u32, 2> render_queue_indices = {UINT32_MAX, UINT32_MAX};
   vk::Queue graphicsQueue;
   vk::Queue presentQueue;
   std::vector<vk::ImageView> swapChainImageViews;
   std::vector<vk::Semaphore> imageAvailableSemaphores;
   std::vector<vk::Semaphore> renderFinishedSemaphores;
+  std::vector<vk::Fence> imageInFlightFences;
   std::vector<vk::Fence> inFlightFences;
+  vk::CommandPool command_pool;
   std::vector<vk::CommandBuffer> commandBuffers;
   MetaBuffer vertexBuffer;
+  AllocatedImage colormap_img;
+  MetaBuffer colormap;
+  vk::ImageView colormap_view;
+  vk::Sampler colormap_sampler;
   vk::DescriptorSetLayout descriptorSetLayout;
   vk::DescriptorPool descriptorPool;
   vk::DescriptorSet descriptorSet;
   vk::SurfaceCapabilitiesKHR capabilities;
   vk::SurfaceFormatKHR surface_format;
   vk::PresentModeKHR present_mode;
+  MetaBuffer value_buffer;
+  MetaBuffer minmax_buffer;
+  Algorithm first_max_reduction;
+  Algorithm first_min_reduction;
+  Algorithm max_reduction;
+  Algorithm min_reduction;
   u32 n_images;
   bool frameBufferResized;
   u32 currentFrame = 0;
-  Renderer(Manager* manager);
+  Renderer(Manager& manager);
   void cleanupSwapchain();
-  void createGraphicsPipeline();
   void recreateSwapchain();
-  void recordCommandBuffer(vk::CommandBuffer& cB, u32 imageIndex);
   void drawFrame();
   ~Renderer();
 };

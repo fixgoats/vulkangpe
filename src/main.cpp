@@ -15,26 +15,9 @@
 
 using std::bit_cast;
 
-struct PositionTextureVertex {
-  vec2<f32> pos;
-  vec2<f32> uv;
-
-  static vk::VertexInputBindingDescription bindingDscr() {
-    return {0, sizeof(PositionTextureVertex), vk::VertexInputRate::eVertex};
-  }
-  static std::array<vk::VertexInputAttributeDescription, 2> attributeDscr() {
-    return {{{0, 0, vk::Format::eR32G32Sfloat,
-              offsetof(PositionTextureVertex, pos)},
-             {1, 0, vk::Format::eR32G32Sfloat,
-              offsetof(PositionTextureVertex, uv)}}};
-  }
-};
-
 static const char* BasePath = SDL_GetBasePath();
 
 constexpr int MAX_FRAMES_IN_FLIGHT = 2;
-constexpr u32 grid_width = 256;
-constexpr u32 grid_height = 256;
 
 struct Init {
   SDL_Window* window;
@@ -238,7 +221,7 @@ void create_image(Init& init, RenderData& data) {
   auto format = vk::Format::eR32G32B32A32Sfloat;
   vk::ImageCreateInfo imageInfo{};
   imageInfo.setImageType(vk::ImageType::e2D);
-  imageInfo.setExtent({grid_width, grid_height, 1});
+  imageInfo.setExtent({GRID_WIDTH, GRID_HEIGHT, 1});
   imageInfo.setMipLevels(1);
   imageInfo.setArrayLayers(1);
   imageInfo.setFormat(format);
@@ -904,7 +887,7 @@ int draw_frame(Init& init, RenderData& data) {
   return 0;
 }
 
-void cleanup(Init& init, RenderData& data) {
+/*void cleanup(Init& init, RenderData& data) {
   for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
     init.disp.destroySemaphore(data.finished_semaphore[i], nullptr);
     init.disp.destroySemaphore(data.available_semaphores[i], nullptr);
@@ -950,7 +933,7 @@ void cleanup(Init& init, RenderData& data) {
   SDL_DestroyWindow(init.window);
   SDL_Vulkan_UnloadLibrary();
   SDL_Quit();
-}
+}*/
 
 MetaBuffer make_staging_buffer(Init& init, size_t size) {
   vk::BufferCreateInfo stagingBCI({}, size,
@@ -1081,142 +1064,29 @@ void make_colormap_buffers(Init& init, RenderData& data,
 }
 
 int main(int argc, char* argv[]) {
-  Manager manager(10 * 1024 * 1024, "Bleh", SDL_WINDOW_RESIZABLE);
-  RenderData render_data;
-  if (0 != create_swapchain(init, render_data))
-    return -1;
-  if (0 != get_queues(init, render_data))
-    return -1;
-  if (0 != create_command_pool(
-               init, bit_cast<VkCommandPool*>(&render_data.command_pool),
-               vkb::QueueType::graphics))
-    return -1;
-  if (0 != create_command_pool(init,
-                               bit_cast<VkCommandPool*>(&init.transfer_pool),
-                               vkb::QueueType::transfer))
-    return -1;
-  create_image(init, render_data);
-  std::vector<f32> values(grid_width * grid_height);
-  for (size_t j = 0; j < grid_height; j++) {
-    f32 y = -1.0 + 2.0 * (f32)j / 480.0;
-    for (size_t i = 0; i < grid_width; i++) {
-      f32 x = -1.0 + 2.0 * (f32)i / 640.0;
-      u32 idx = exp(-x * x - y * y);
-      values[j * 640 + i] = idx;
+  auto window = create_window_sdl("Bleh", SDL_WINDOW_RESIZABLE);
+  {
+    Manager mgr(10 * 1024 * 1024, window);
+    Renderer renderer(mgr);
+    bool running = true;
+    while (running) {
+      SDL_Event event;
+      while (SDL_PollEvent(&event)) {
+        if (event.type == SDL_EVENT_QUIT ||
+            (event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED &&
+             event.window.windowID == SDL_GetWindowID(window))) {
+          running = false;
+          break;
+        }
+        if (SDL_GetWindowFlags(window) & SDL_WINDOW_MINIMIZED) {
+          SDL_Delay(10);
+          continue;
+        }
+      }
+      renderer.drawFrame();
     }
   }
-  make_colormap_buffers(init, render_data, cm::inferno, grid_width,
-                        grid_height);
-  std::vector<PositionTextureVertex> vertices = {
-      {{-1.0f, -1.0f}, {0.0f, 0.0f}}, {{1.0f, -1.0f}, {1.0f, 0.0f}},
-      {{1.0f, 1.0f}, {1.0f, 1.0f}},   {{1.0f, 1.0f}, {1.0f, 1.0f}},
-      {{-1.0f, 1.0f}, {0.0f, 1.0f}},  {{-1.0f, -1.0f}, {0.0f, 0.0f}},
-  };
-  make_vertex_buffer(init, render_data, vertices);
-  if (0 != create_descriptor(init, render_data)) {
-    return -1;
-  }
-  if (0 != create_render_pass(init, render_data))
-    return -1;
-  if (0 != create_graphics_pipelines(init, render_data))
-    return -1;
-  if (0 != create_framebuffers(init, render_data))
-    return -1;
-  if (0 != create_command_buffers(init, render_data))
-    return -1;
 
-  if (0 != create_sync_objects(init, render_data))
-    return -1;
-
-  vk::BufferCreateInfo BCI({}, values.size() * sizeof(f32),
-                           vk::BufferUsageFlagBits::eStorageBuffer |
-                               vk::BufferUsageFlagBits::eTransferDst |
-                               vk::BufferUsageFlagBits::eTransferSrc);
-  VmaAllocationCreateInfo allocCreateInfo{};
-  allocCreateInfo.usage = VMA_MEMORY_USAGE_AUTO;
-  allocCreateInfo.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
-  allocCreateInfo.priority = 1.0f;
-  MetaBuffer minBuffer(init.allocator, allocCreateInfo, BCI);
-  MetaBuffer maxBuffer(init.allocator, allocCreateInfo, BCI);
-  std::cout << "Faulty copy is here\n";
-  copyBuffer(init, render_data.value_buffer, minBuffer);
-  std::cout << "Faulty copy is here\n";
-  copyBuffer(init, render_data.value_buffer, maxBuffer);
-  auto max_code = readFile<u32>("Shaders/max.comp.spv");
-  // auto min_code = readFile<u32>("Shaders/min.comp.spv");
-  u32 push_size = 4;
-  Algorithm maxAlg(pcast<vk::Device>(&init.device.device), {}, {&maxBuffer},
-                   max_code, nullptr, nullptr, 0, &push_size, 1);
-  /*Algorithm minAlg(pcast<vk::Device>(&init.device.device),
-                   {&maxBuffer, &minBuffer}, min_code, nullptr, nullptr, 0,
-                   &push_size, 1);*/
-
-  oneTimeSubmit(
-      init.device.device, render_data.command_pool, render_data.graphics_queue,
-      [&](vk::CommandBuffer cB) {
-        cB.bindPipeline(vk::PipelineBindPoint::eCompute, maxAlg.m_Pipeline);
-        cB.bindDescriptorSets(vk::PipelineBindPoint::eCompute,
-                              maxAlg.m_PipelineLayout, 0,
-                              maxAlg.m_DescriptorSet, nullptr);
-        const u32 n_iters = uintlog2(values.size()) + 1;
-        std::cout << n_iters << '\n';
-        std::vector<u32> strides(n_iters);
-        for (u32 i = 0; i < n_iters; i++) {
-          strides[i] = pow(2, i + 1);
-        }
-        for (const auto& stride : strides) {
-          cB.pushConstants(maxAlg.m_PipelineLayout,
-                           vk::ShaderStageFlagBits::eCompute, 0, 4, &stride);
-          std::cout << "values.size() is: " << values.size()
-                    << ", stride is: " << stride << '\n';
-          u32 disp_count = values.size() / (64 * stride);
-          std::cout << disp_count << '\n';
-          cB.dispatch(std::clamp(disp_count, 1u, UINT32_MAX), 1, 1);
-          cB.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader,
-                             vk::PipelineStageFlagBits::eComputeShader, {},
-                             vk::MemoryBarrier(vk::AccessFlagBits::eMemoryWrite,
-                                               vk::AccessFlagBits::eMemoryRead),
-                             nullptr, nullptr);
-        }
-      });
-  bufferToVec(init, maxBuffer, values);
-  std::cout << values[0] << '\n';
-
-  auto timerstart = std::chrono::steady_clock::now();
-  bool running = true;
-  while (running) {
-    SDL_Event event;
-    while (SDL_PollEvent(&event)) {
-      if (event.type == SDL_EVENT_QUIT ||
-          (event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED &&
-           event.window.windowID == SDL_GetWindowID(init.window))) {
-        running = false;
-        timerstart = std::chrono::steady_clock::now();
-        std::cout << "Closing!\n";
-        break;
-      }
-      if (SDL_GetWindowFlags(init.window) & SDL_WINDOW_MINIMIZED) {
-        SDL_Delay(10);
-        continue;
-      }
-      s32 res = draw_frame(init, render_data);
-      if (res != 0) {
-        std::cout << "Failed to draw frame\n";
-        return -1;
-      }
-    }
-  }
-  init.disp.deviceWaitIdle();
-
-  vmaDestroyBuffer(init.allocator, minBuffer.buffer, minBuffer.allocation);
-  vmaDestroyBuffer(init.allocator, maxBuffer.buffer, maxBuffer.allocation);
-  cleanup(init, render_data);
-  // Seems the timer doesn't actually measure how long it took the window to
-  // close.
-  auto end = std::chrono::steady_clock::now();
-  std::cout << "Shutdown took: "
-            << std::chrono::duration_cast<std::chrono::milliseconds>(end -
-                                                                     timerstart)
-            << "\n";
+  SDL_DestroyWindow(window);
   return 0;
 }

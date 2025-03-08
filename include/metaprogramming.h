@@ -18,7 +18,7 @@ T* pcast(B* x) {
 }
 
 template <auto Start, auto End, auto Inc, class F>
-consteval void constexpr_for(F&& f) {
+constexpr void constexpr_for(F&& f) {
   if constexpr (Start < End) {
     f(std::integral_constant<decltype(Start), Start>());
     constexpr_for<Start + Inc, End, Inc>(f);
@@ -26,7 +26,7 @@ consteval void constexpr_for(F&& f) {
 }
 
 template <class T>
-consteval std::array<size_t, boost::pfr::tuple_size_v<T>> struct_field_sizes() {
+constexpr std::array<size_t, boost::pfr::tuple_size_v<T>> struct_field_sizes() {
   constexpr size_t n = boost::pfr::tuple_size_v<T>;
   constexpr std::array<size_t, n> sizes;
   constexpr_for<0, n, 1>([&sizes](auto i) {
