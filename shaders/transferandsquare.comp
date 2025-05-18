@@ -1,0 +1,28 @@
+#version 440
+
+layout(constant_id = 0) const uint NELEMENTSX = 2; // spec constants set to
+                                                   // ridiculous values to
+                                                   // ensure they are
+                                                   // overwritten in main
+layout(constant_id = 1) const uint NELEMENTSY = 2;
+layout(constant_id = 2) const uint XGROUPSIZE = 1;
+layout(constant_id = 3) const uint YGROUPSIZE = 1;
+layout(local_size_x_id = 2, local_size_y_id = 3, local_size_z = 1) in;
+
+layout(std430, set = 0, binding = 0) buffer Src {
+  vec2 src[NELEMENTSX * NELEMENTSY];
+};
+
+layout(std430, set = 0, binding = 1) buffer Dst {
+  float dst[NELEMENTSX * NELEMENTSY];
+};
+
+float f(vec2 z) { return z.x * z.x + z.y * z.y; }
+
+void main() {
+  uint i = gl_GlobalInvocationID.x;
+  uint j = gl_GlobalInvocationID.y;
+
+  uint idx = j * NELEMENTSX + i;
+  dst[idx] = f(src[idx]);
+}

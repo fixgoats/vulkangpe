@@ -1,13 +1,20 @@
 #version 440
 layout(binding = 0) uniform writeonly image2D colormap;
-layout(binding = 1) buffer readonly colormap_indices {
-  uint indices[640 * 480];
+layout(binding = 1) buffer readonly Colors { vec4 colors[256]; };
+layout(binding = 2) buffer readonly MinMax {
+  // min is in .y, max is in .x
+  vec2 minmax;
+  float misc[];
 };
-layout(binding = 2) buffer readonly colormap_values { vec3 values[256]; };
+layout(binding = 3) buffer readonly Values { float values[]; };
 layout(local_size_x = 8, local_size_y = 8) in;
 
 void main() {
   ivec2 idx = ivec2(gl_GlobalInvocationID.xy);
-  uint uidx = gl_GlobalInvocationID.y * 640 + gl_GlobalInvocationID.x;
-  imageStore(colormap, idx, vec4(values[indices[uidx]], 1.0));
+  ivec2 img_size = imageSize(colormap);
+  uint uidx = gl_GlobalInvocationID.y * img_size.x + gl_GlobalInvocationID.x;
+  uint coloridx = uint(256 * (values[uidx] - minmax.y) / (minmax.x - minmax.y));
+  if (coloridx > 255)
+    coloridx = 255;
+  imageStore(colormap, idx, colors[coloridx]);
 }

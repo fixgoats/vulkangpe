@@ -15,8 +15,8 @@
 
 using std::bit_cast;
 
-constexpr u32 GRID_WIDTH = 256;
-constexpr u32 GRID_HEIGHT = 256;
+constexpr u32 GRID_WIDTH = 512;
+constexpr u32 GRID_HEIGHT = 512;
 
 struct PositionTextureVertex {
   vec2<f32> pos;
@@ -62,7 +62,7 @@ void saveToFile(std::string fname, const char* buf, size_t size);
 
 constexpr u32 maxFramesInFlight = 2;
 
-struct SimConstants {
+/*struct SimConstants {
   u32 nElementsX;
   u32 nElementsY;
   u32 nElementsZ;
@@ -85,7 +85,7 @@ struct SimConstants {
     return (nElementsY % yGroupSize == 0) && (nElementsX % xGroupSize == 0);
   }
   constexpr u32 elementsTotal() const { return nElementsX * nElementsY; }
-};
+};*/
 
 // std::ostream& operator<<(std::ostream& os, const SimConstants& obj);
 // std::ofstream& operator<<(std::ofstream& os, const SimConstants& obj);
@@ -146,8 +146,14 @@ struct Algorithm {
   Algorithm(vk::Device device, const std::vector<vk::ImageView>& img_views,
             const std::vector<MetaBuffer*>& buffers,
             const std::vector<u32>& spirv, const u8* specConsts = nullptr,
-            const u32* sizes = nullptr, size_t nConsts = 0,
-            const u32* pushSizes = nullptr, size_t nPushConstants = 0);
+            const size_t* sizes = nullptr, size_t nConsts = 0,
+            const size_t* pushSizes = nullptr, size_t nPushConstants = 0);
+  void initialize(vk::Device device,
+                  const std::vector<vk::ImageView>& img_views,
+                  const std::vector<MetaBuffer*>& buffers,
+                  const std::vector<u32>& spirv, const u8* specConsts = nullptr,
+                  const size_t* sizes = nullptr, size_t nConsts = 0,
+                  const size_t* pushSizes = nullptr, size_t nPushConstants = 0);
   ~Algorithm();
 };
 
@@ -179,19 +185,24 @@ struct Manager {
   SDL_Window* window;
   vk::SurfaceKHR surface;
 
-  Manager(size_t stagingSize, SDL_Window* window);
+  Manager(size_t stagingSize, SDL_Window* window = nullptr);
   void finishSetup(size_t stagingSize, vk::SurfaceKHR& surface);
   // Manager uses a single staging buffer for efficient copies.
-  void copyBuffer(vk::Buffer& srcBuffer, vk::Buffer& dstBuffer, u32 bufferSize);
+  void copyBuffer(vk::Buffer& srcBuffer, vk::Buffer& dstBuffer, u32 bufferSize,
+                  u32 src_offset = 0, u32 dst_offset = 0);
   void copyInBatches(vk::Buffer& srcBuffer, vk::Buffer& dstBuffer,
                      u32 batchSize, u32 numBatches);
+  vk::CommandBuffer copyOp(vk::Buffer srcBuffer, vk::Buffer dstBuffer,
+                           u32 bufferSize, u32 src_offset = 0,
+                           u32 dst_offset = 0);
 
   vk::CommandBuffer beginRecord(vk::CommandBufferUsageFlagBits bits = {});
   void execute(vk::CommandBuffer& b);
   void executeNoSync(vk::CommandBuffer& b);
   void queueWaitIdle();
   void getQueueFamilyIndices(vk::SurfaceKHR& surface);
-  void writeToBuffer(MetaBuffer& buffer, const void* input, size_t size);
+  void writeToBuffer(MetaBuffer& buffer, const void* input, size_t size,
+                     size_t src_offset = 0, size_t dst_offset = 0);
   template <class T>
   void writeToBuffer(MetaBuffer& buffer, std::vector<T> vec) {
     writeToBuffer(buffer, vec.data(), vec.size() * sizeof(T));
@@ -256,20 +267,17 @@ struct Manager {
     writeToBuffer(buffer, v);
     return buffer;
   }
-  Algorithm makeAlgorithmRaw(std::string spirvname,
-                             const std::vector<vk::ImageView>& images,
-                             const std::vector<MetaBuffer*>& buffers,
-                             const u8* specConsts = nullptr,
-                             const u32* specConstOffsets = nullptr,
-                             size_t nConsts = 0, const u32* pushSizes = nullptr,
-                             size_t nPushConstants = 0);
+  Algorithm makeAlgorithmRaw(
+      std::string spirvname, const std::vector<vk::ImageView>& images,
+      const std::vector<MetaBuffer*>& buffers, const u8* specConsts = nullptr,
+      const size_t* specConstOffsets = nullptr, size_t nConsts = 0,
+      const size_t* pushSizes = nullptr, size_t nPushConstants = 0);
   template <class T>
   Algorithm
   makeAlgorithm(std::string spirvname, const std::vector<vk::ImageView>& images,
-                std::vector<MetaBuffer*> buffers, const T& specConsts) {
+                std::vector<MetaBuffer*> buffers, const T specConsts) {
     constexpr auto sizes = struct_field_sizes<T>();
     constexpr auto n_fields = sizes.size();
-    std::cout << "Detected " << n_fields << " specialization constants.";
     return makeAlgorithmRaw(spirvname, images, buffers,
                             bit_cast<const u8*>(&specConsts), sizes.data(),
                             sizes.size());
@@ -277,11 +285,11 @@ struct Manager {
   template <class PushType, class T>
   Algorithm makeAlgorithm(std::string spirvname,
                           std::vector<MetaBuffer*> buffers,
-                          const T& specConsts) {
+                          const T specConsts) {
     constexpr size_t nSpecConsts = boost::pfr::tuple_size_v<T>;
     std::array<u32, nSpecConsts> sizes;
     constexpr_for<0, nSpecConsts, 1>([&sizes](auto i) {
-      sizes[i] = sizeof(boost::pfr::tuple_element_t<i, SimConstants>);
+      sizes[i] = sizeof(boost::pfr::tuple_element_t<i, T>);
     });
     constexpr size_t nPushConsts = boost::pfr::tuple_size_v<PushType>;
     std::array<u32, nPushConsts> pushSizes;
@@ -335,6 +343,7 @@ struct Renderer {
   std::vector<vk::Fence> inFlightFences;
   vk::CommandPool command_pool;
   std::vector<vk::CommandBuffer> commandBuffers;
+  vk::CommandBuffer reduction_buffer;
   MetaBuffer vertexBuffer;
   AllocatedImage colormap_img;
   MetaBuffer colormap;
@@ -352,10 +361,11 @@ struct Renderer {
   Algorithm first_min_reduction;
   Algorithm max_reduction;
   Algorithm min_reduction;
+  Algorithm fill_colormap_img;
   u32 n_images;
   bool frameBufferResized;
   u32 currentFrame = 0;
-  Renderer(Manager& manager);
+  Renderer(Manager& manager, u32 nx, u32 ny);
   void cleanupSwapchain();
   void recreateSwapchain();
   void drawFrame();

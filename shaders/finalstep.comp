@@ -13,43 +13,50 @@ layout(constant_id = 8) const float R = 0.015;
 layout(constant_id = 9) const float eta = 2.;
 layout(constant_id = 10) const float dt = 0.1;
 
-layout(std430, set = 0, binding = 0) buffer PsiR { vec2 psiR[NELEMENTSX * NELEMENTSY]; };
-layout(std430, set = 0, binding = 1) buffer KTimeEvo { vec2 kTimeEvo[NELEMENTSX * NELEMENTSY]; };
-layout(std430, set = 0, binding = 2) buffer OldPsiR { vec2 oldPsiR[NELEMENTSX * NELEMENTSY]; };
-layout(std430, set = 0, binding = 3) buffer NR { float nR[NELEMENTSX * NELEMENTSY]; };
-layout(std430, set = 0, binding = 4) buffer Pump { float pump[NELEMENTSX * NELEMENTSY]; };
+layout(std430, set = 0, binding = 0) buffer PsiR {
+  vec2 psiR[NELEMENTSX * NELEMENTSY];
+};
+layout(std430, set = 0, binding = 1) buffer OldPsiR {
+  vec2 oldPsiR[NELEMENTSX * NELEMENTSY];
+};
+layout(std430, set = 0, binding = 2) buffer NR {
+  float nR[NELEMENTSX * NELEMENTSY];
+};
+layout(std430, set = 0, binding = 3) buffer Pump {
+  float pump[NELEMENTSX * NELEMENTSY];
+};
 
 vec2 c_mul(vec2 a, vec2 b) {
-    return vec2((a.x*b.x)-(a.y*b.y), (a.x*b.y)+(a.y*b.x));
+  return vec2((a.x * b.x) - (a.y * b.y), (a.x * b.y) + (a.y * b.x));
 }
 
-vec2 c_exp(vec2 a) {
-    return exp(a.x) * vec2(cos(a.y), sin(a.y));
-}
+vec2 c_exp(vec2 a) { return exp(a.x) * vec2(cos(a.y), sin(a.y)); }
 
 vec2 halfRTimeEvo(vec2 psi, float nr, float p) {
-    return c_exp(vec2(0.25*dt*(R*nr-gammalp), -0.5*dt*((G*eta/Gamma)*p + alpha * dot(psi, psi) + G*nr)));
+  return c_exp(vec2(
+      0.25 * dt * (R * nr - gammalp),
+      -0.5 * dt * ((G * eta / Gamma) * p + alpha * dot(psi, psi) + G * nr)));
 }
 
 float f(float y, float p, vec2 psi) {
-    return -(Gamma + R*dot(psi,psi))*y + p;
+  return -(Gamma + R * dot(psi, psi)) * y + p;
 }
 
 float RK4Step(float y, float p, vec2 psi0, vec2 psi) {
-    float k1 = f(y, p, psi0);
-    float k2 = f(y + (0.5 * dt) * k1, p, 0.5*(psi0 + psi));
-    float k3 = f(y + (0.5 * dt) * k2, p, 0.5*(psi0 + psi));
-    float k4 = f(y + dt * k3, p, psi);
-    return y + dt * (1. / 6.) * (k1 + (2 * k2) + (2 * k3) + k4);
+  float k1 = f(y, p, psi0);
+  float k2 = f(y + (0.5 * dt) * k1, p, 0.5 * (psi0 + psi));
+  float k3 = f(y + (0.5 * dt) * k2, p, 0.5 * (psi0 + psi));
+  float k4 = f(y + dt * k3, p, psi);
+  return y + dt * (1. / 6.) * (k1 + (2 * k2) + (2 * k3) + k4);
 }
 
 void main() {
-    uint i = gl_GlobalInvocationID.x;
-    uint j = gl_GlobalInvocationID.y;
+  uint i = gl_GlobalInvocationID.x;
+  uint j = gl_GlobalInvocationID.y;
 
-    uint idx = j * NELEMENTSX + i;
-    float p = pump[idx];
-    vec2 psi = psiR[idx];
-    psiR[idx] = c_mul(halfRTimeEvo(psi, nR[idx], p), psi);
-    nR[idx] = RK4Step(nR[idx], p, oldPsiR[idx], psiR[idx]);
+  uint idx = j * NELEMENTSX + i;
+  float p = pump[idx];
+  vec2 psi = psiR[idx];
+  psiR[idx] = c_mul(halfRTimeEvo(psi, nR[idx], p), psi);
+  nR[idx] = RK4Step(nR[idx], p, oldPsiR[idx], psiR[idx]);
 }

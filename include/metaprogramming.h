@@ -28,7 +28,7 @@ constexpr void constexpr_for(F&& f) {
 template <class T>
 constexpr std::array<size_t, boost::pfr::tuple_size_v<T>> struct_field_sizes() {
   constexpr size_t n = boost::pfr::tuple_size_v<T>;
-  constexpr std::array<size_t, n> sizes;
+  std::array<size_t, n> sizes{};
   constexpr_for<0, n, 1>([&sizes](auto i) {
     sizes[i] = sizeof(boost::pfr::tuple_element_t<i, T>);
   });
