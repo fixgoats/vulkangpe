@@ -20,13 +20,20 @@ const float R = 100.015;
 [SpecializationConstant]
 const float eta = 2.e6;
 [SpecializationConstant]
- const float dt = 1e6;
-
-layout(local_size_x_id = 2, local_size_y = 1, local_size_z = 1) in;
-
+const float dt = 1e6;
 
 float2 halfRTimeEvo(float2 psi, float nr, float p) {
-    return c_exp(float2(0.25 * dt * (R * nr - gammalp), -0.5 * dt * ((G * eta / Gamma) * p + alpha * dot(psi, psi) + G * nr)));
+  return c_exp(float2(
+      0.25 * dt * (R * nr - gammalp),
+      -0.5 * dt * ((G * eta / Gamma) * p + alpha * dot(psi, psi) + G * nr)));
+}
+
+float RK4Step(float y, float p, float2 psi0, float2 psi) {
+  float k1 = f(y, p, psi0);
+  float k2 = f(y + (0.5 * dt) * k1, p, 0.5 * (psi0 + psi));
+  float k3 = f(y + (0.5 * dt) * k2, p, 0.5 * (psi0 + psi));
+  float k4 = f(y + dt * k3, p, psi);
+  return y + dt * (1. / 6.) * (k1 + (2 * k2) + (2 * k3) + k4);
 }
 
 [shader("compute")]

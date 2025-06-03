@@ -76,8 +76,8 @@ f32 int_to_coord(u32 i, u32 nx, f32 start, f32 end) {
 
 int main(int argc, char* argv[]) {
   std::cout << "started\n";
-  Manager mgr(10 * 1024 * 1024);
-  std::cout << "created manager\n";
+  // Manager mgr(10 * 1024 * 1024);
+  /*std::cout << "created manager\n";
   std::vector<f32> cpu_vec1(100, 1);
   std::vector<f32> cpu_vec2(100, 3);
   MetaBuffer buf1 = mgr.vecToBuffer(cpu_vec1);
@@ -100,15 +100,15 @@ int main(int argc, char* argv[]) {
   for (const auto& e : resultvec) {
     std::cout << e << ' ';
   }
-  std::cout << std::endl;
-  /*auto window = create_window_sdl("Bleh", SDL_WINDOW_RESIZABLE);
+  std::cout << std::endl;*/
+  auto window = create_window_sdl("Bleh", SDL_WINDOW_RESIZABLE);
   {
     Manager mgr(10 * 1024 * 1024, window);
     Renderer renderer(mgr, sc.nx, sc.ny);
     std::vector<c32> cpu_psir(sc.nx * sc.ny);
     std::random_device dev;
     std::mt19937 gen(dev());
-    std::uniform_real_distribution<f32> dis(-0.001, 0.001);
+    std::uniform_real_distribution<f32> dis(-1e-8, 1e-8);
     for (auto& x : cpu_psir) {
       x = c32{dis(gen), dis(gen)};
     }
@@ -227,6 +227,6 @@ int main(int argc, char* argv[]) {
     deleteVkFFT(&app);
   }
 
-  SDL_DestroyWindow(window);*/
+  SDL_DestroyWindow(window);
   return 0;
 }
