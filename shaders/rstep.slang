@@ -1,7 +1,5 @@
 // rstep.slang
-// #include <algebra.slang>
-#include <complex.slang>
-#include <rk4.slang>
+import complex;
 
 RWStructuredBuffer<float2> psir;
 RWStructuredBuffer<float2> oldpsir;
@@ -39,35 +37,35 @@ void rstep(uint3 threadId: SV_DispatchThreadID) {
   psir[i] = c_mul(halfRTimeEvo(psir[i], nR[i], pump[i]), psir[i]);
 }
 
-/* float RK4Step(float y, float p, float2 psi0, float2 psi) {
+float f(float y, float p, float2 psi) {
+  return -(Gamma + R * dot(psi, psi)) * y + p;
+}
+
+float RK4Step(float y, float p, float2 psi0, float2 psi) {
   float k1 = f(y, p, psi0);
   float k2 = f(y + (0.5 * dt) * k1, p, 0.5 * (psi0 + psi));
   float k3 = f(y + (0.5 * dt) * k2, p, 0.5 * (psi0 + psi));
   float k4 = f(y + dt * k3, p, psi);
   return y + dt * (1. / 6.) * (k1 + (2 * k2) + (2 * k3) + k4);
-}*/
+}
 
-/*float f(float y, float p, float2 psi) {
-  return -(Gamma + R * dot(psi, psi)) * y + p;
-}*/
 /*struct Exciton : ISystem, IVec {
   float n;
   Exciton scalar_mul(float a) { return { a * this.n }; }
   Exciton system() { return { -(Gamma + R) * n }; }
-}*/
+}
 extension float : ISystem, IVec {
   float scalar_mul(float b) { return this * b; }
   float system() { return -(Gamma + R) * this; }
-}
+}*/
 
 [shader("compute")]
 [numthreads(XGROUPSIZE, 1, 1)]
 void finalstep(uint3 threadId: SV_DispatchThreadID) {
   uint i = threadId.x;
   float p = pump[i];
-  float2 psi = psir[i];
   float3 b = float3(1., 2., 3.) * float3(3., 2., 4.);
-  psir[i] = c_mul(halfRTimeEvo(psi, nR[i], p), psi);
-  nR[i] = RK4Step(nR[i], dt, p, oldpsir[i]);
+  psir[i] = c_mul(halfRTimeEvo(psir[i], nR[i], p), psir[i]);
+  nR[i] = RK4Step(nR[i], dt, p, oldpsir[i], psir[i]);
 }
 

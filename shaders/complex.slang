@@ -1,4 +1,5 @@
-#pragma once
+module complex;
+
 float2 c_mul(float2 a, float2 b) {
   return float2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
 }
