@@ -598,7 +598,7 @@ void appendOp(vk::CommandBuffer& b, Algorithm& a, u32 X, u32 Y, u32 Z) {
 Manager::~Manager() {
   device.waitIdle();
   device.destroyFence(fence);
-  if (!window) {
+  if (window) {
     instance.destroySurfaceKHR(surface);
   }
   vmaDestroyBuffer(allocator, staging, stagingAllocation);

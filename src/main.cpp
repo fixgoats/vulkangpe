@@ -74,33 +74,47 @@ f32 int_to_coord(u32 i, u32 nx, f32 start, f32 end) {
   return (end - start) * static_cast<f32>(i) / static_cast<f32>(nx) + start;
 }
 
-int main(int argc, char* argv[]) {
-  std::cout << "started\n";
-  // Manager mgr(10 * 1024 * 1024);
-  /*std::cout << "created manager\n";
-  std::vector<f32> cpu_vec1(100, 1);
-  std::vector<f32> cpu_vec2(100, 3);
-  MetaBuffer buf1 = mgr.vecToBuffer(cpu_vec1);
-  std::cout << "made 1st buffer\n";
-  MetaBuffer buf2 = mgr.vecToBuffer(cpu_vec2);
-  std::cout << "made 2nd buffer\n";
-  MetaBuffer resultbuf = mgr.makeRawBuffer<f32>(100);
-  std::cout << "made result buffer\n";
-  Algorithm add = mgr.makeAlgorithmRaw("Shaders/hello-world.spv", {},
-                                       {&buf1, &buf2, &resultbuf});
-  std::cout << "made algorithm\n";
-  vk::CommandBuffer cb = mgr.beginRecord();
-  appendOp(cb, add, 100, 1, 1);
-  cb.end();
-  std::cout << "recorded command buffer\n";
-  mgr.execute(cb);
-  std::cout << "executed command buffer\n";
-  std::vector<f32> resultvec(100);
-  mgr.writeFromBuffer(resultbuf, resultvec);
-  for (const auto& e : resultvec) {
-    std::cout << e << ' ';
+int benchmark_internal_vs_external_loop() {
+  Manager mgr(10 * 1024 * 1024);
+  constexpr u32 n_elements = 256 * 1024 * 1024;
+  std::vector<f32> values(n_elements);
+  for (u32 i = 0; i < n_elements; i++) {
+    values[i] = (f32)(n_elements - i);
   }
-  std::cout << std::endl;*/
+  values[256 * 1024] = -1000.;
+  std::cout << "Copying to GPU\n";
+  MetaBuffer gpu_values = mgr.vecToBuffer(values);
+  std::cout << "Number of elements in values: " << values.size() << '\n';
+  std::cout << "GPU buffer size in bytes: " << gpu_values.aInfo.size << '\n';
+  std::cout << "Done copying, initialising minimum reduction\n";
+  size_t pushSize = 4;
+  Algorithm findminloop =
+      mgr.makeAlgorithmRaw("Shaders/findminloop.spv", {}, {&gpu_values},
+                           nullptr, nullptr, 0, &pushSize, 1);
+  vk::CommandBuffer cb = mgr.beginRecord();
+  u32 stride = (n_elements + 1) / 2;
+  std::cout << "pushing constants\n";
+  cb.pushConstants(findminloop.m_PipelineLayout,
+                   vk::ShaderStageFlagBits::eCompute, 0, 4, &stride);
+  std::cout << "appending op\n";
+  u32 X = (n_elements + 1) / (64 * 2);
+  std::cout << "Supposedly dispatching: " << X << " workgroups.\n";
+  appendOp(cb, findminloop, X, 1, 1);
+  cb.end();
+
+  std::cout << "Executing reduction\n";
+  mgr.execute(cb);
+  std::cout << "Copying from GPU\n";
+  mgr.writeFromBuffer(gpu_values, values.data(), 512 * 4);
+  std::cout << "First 512 values after reduction:\n";
+  for (u32 i = 0; i < 512; i++) {
+    std::cout << values[i] << '\n';
+  }
+  return 0;
+}
+
+int execute_graphical() {
+  std::cout << "started\n";
   auto window = create_window_sdl("Bleh", SDL_WINDOW_RESIZABLE);
   {
     Manager mgr(10 * 1024 * 1024, window);
@@ -229,4 +243,8 @@ int main(int argc, char* argv[]) {
 
   SDL_DestroyWindow(window);
   return 0;
+}
+
+int main(int argc, char* argv[]) {
+  return benchmark_internal_vs_external_loop();
 }

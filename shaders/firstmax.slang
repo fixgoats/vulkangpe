@@ -26,19 +26,21 @@ void firstmax(uint3 threadId: SV_DispatchThreadID) {
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
-void findmin(uint3 threadId: SV_DispatchThreadID, uniform stride: uint) {
+void findminloop(uint3 threadId: SV_DispatchThreadID, uniform stride: uint) {
   uint i = threadId.x;
-  if (idx < stride && idx + stride < values.length()) {
-    minmax[i] = max(minmax[idx], minmax[idx + stride]);
+  uint local_stride = stride;
+  for (uint local_stride = stride; local_stride > 1; local_stride = (local_stride + 1) / 2) {
+    if (idx < stride && idx + stride < minmax.length()) {
+      minmax[i] = min(minmax[idx], minmax[idx + stride]);
+    }
   }
 }
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
-void findmax(uint3 threadId: SV_DispatchThreadID, uniform stride: uint) {
-  uint idx = stride * threadId.x + 1;
-  if (idx + stride / 2 < maxima.length()) {
-    maxima[idx] =
-        max(maxima[idx], maxima[idx + stride / 2]);
+void findminsingle(uint3 threadId: SV_DispatchThreadID, uniform stride: uint) {
+  uint idx = threadId.x;
+  if (idx + stride < minmax.length()) {
+    minmax[idx] = min(minmax[idx], minmax[idx + stride]);
   }
 }
