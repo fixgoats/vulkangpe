@@ -19,6 +19,8 @@ using std::bit_cast;
 constexpr u32 GRID_WIDTH = 512;
 constexpr u32 GRID_HEIGHT = 512;
 
+constexpr u32 round_up_x16(u32 n) { return ((n + 15) / 16) * 16; }
+
 struct PositionTextureVertex {
   vec2<f32> pos;
   vec2<f32> uv;
@@ -224,7 +226,7 @@ struct Manager {
   template <typename T>
   MetaBuffer makeRawBuffer(u32 nElements) {
     vk::BufferCreateInfo bCI{vk::BufferCreateFlags(),
-                             nElements * sizeof(T),
+                             round_up_x16(nElements * sizeof(T)),
                              vk::BufferUsageFlagBits::eStorageBuffer |
                                  vk::BufferUsageFlagBits::eTransferDst |
                                  vk::BufferUsageFlagBits::eTransferSrc,

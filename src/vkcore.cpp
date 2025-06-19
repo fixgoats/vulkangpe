@@ -432,7 +432,7 @@ Manager::Manager(size_t stagingSize, SDL_Window* window) {
   allocatorInfo.device = device;
   allocatorInfo.instance = instance;
   vmaCreateAllocator(&allocatorInfo, &allocator);
-  vk::BufferCreateInfo stagingBCI({}, stagingSize,
+  vk::BufferCreateInfo stagingBCI({}, round_up_x16(stagingSize),
                                   vk::BufferUsageFlagBits::eTransferSrc |
                                       vk::BufferUsageFlagBits::eTransferDst);
   VmaAllocationCreateInfo allocCreateInfo{};
@@ -509,7 +509,7 @@ void Manager::writeToBuffer(MetaBuffer& dest, const void* source, size_t size,
   // store.
   if (size > stagingInfo.size) {
     vmaDestroyBuffer(allocator, staging, stagingAllocation);
-    vk::BufferCreateInfo stagingBCI({}, size,
+    vk::BufferCreateInfo stagingBCI({}, round_up_x16(size),
                                     vk::BufferUsageFlagBits::eTransferSrc |
                                         vk::BufferUsageFlagBits::eTransferDst);
     VmaAllocationCreateInfo allocCreateInfo{};
@@ -533,7 +533,7 @@ void Manager::writeFromBuffer(MetaBuffer& source, void* dest, size_t size) {
   // store.
   if (size > stagingInfo.size) {
     vmaDestroyBuffer(allocator, staging, stagingAllocation);
-    vk::BufferCreateInfo stagingBCI({}, size,
+    vk::BufferCreateInfo stagingBCI({}, round_up_x16(size),
                                     vk::BufferUsageFlagBits::eTransferSrc |
                                         vk::BufferUsageFlagBits::eTransferDst);
     VmaAllocationCreateInfo allocCreateInfo{};
@@ -1047,12 +1047,12 @@ Renderer::Renderer(Manager& manager, u32 nx, u32 ny) {
   colormap.allocate(manager.allocator, img_alloc_create_info, colormapBCI);
   manager.writeToBuffer(colormap, cm::viridis.data(),
                         cm::viridis.size() * sizeof(cm::AlignedColor));
-  vk::BufferCreateInfo valueBCI({}, ny * nx * sizeof(f32),
+  vk::BufferCreateInfo valueBCI({}, round_up_x16(ny * nx * sizeof(f32)),
                                 vk::BufferUsageFlagBits::eStorageBuffer |
                                     vk::BufferUsageFlagBits::eTransferDst |
                                     vk::BufferUsageFlagBits::eTransferSrc);
   vk::BufferCreateInfo minmaxBCI(
-      {}, ((ny * nx + 1) / 2) * sizeof(f32) + 4 * sizeof(f32),
+      {}, round_up_x16(((ny * nx + 1) / 2) * sizeof(f32) + 4 * sizeof(f32)),
       vk::BufferUsageFlagBits::eStorageBuffer |
           vk::BufferUsageFlagBits::eTransferDst |
           vk::BufferUsageFlagBits::eTransferSrc);

@@ -76,12 +76,12 @@ f32 int_to_coord(u32 i, u32 nx, f32 start, f32 end) {
 
 int benchmark_internal_vs_external_loop() {
   Manager mgr(10 * 1024 * 1024);
-  constexpr u32 n_elements = 256 * 1024 * 1024;
+  constexpr u32 n_elements = 4 * 1024;
   std::vector<f32> values(n_elements);
   for (u32 i = 0; i < n_elements; i++) {
     values[i] = (f32)(n_elements - i);
   }
-  values[256 * 1024] = -1000.;
+  values[n_elements - 1] = -1000.;
   std::cout << "Copying to GPU\n";
   MetaBuffer gpu_values = mgr.vecToBuffer(values);
   std::cout << "Number of elements in values: " << values.size() << '\n';
@@ -97,17 +97,18 @@ int benchmark_internal_vs_external_loop() {
   cb.pushConstants(findminloop.m_PipelineLayout,
                    vk::ShaderStageFlagBits::eCompute, 0, 4, &stride);
   std::cout << "appending op\n";
-  u32 X = (n_elements + 1) / (64 * 2);
-  std::cout << "Supposedly dispatching: " << X << " workgroups.\n";
+  u32 X = (stride + 63) / 64;
+  std::cout << "Dispatching: " << X << " workgroups.\n"
+            << "Number of threads should be: " << X * 64 << '\n';
   appendOp(cb, findminloop, X, 1, 1);
   cb.end();
 
   std::cout << "Executing reduction\n";
   mgr.execute(cb);
   std::cout << "Copying from GPU\n";
-  mgr.writeFromBuffer(gpu_values, values.data(), 512 * 4);
-  std::cout << "First 512 values after reduction:\n";
-  for (u32 i = 0; i < 512; i++) {
+  mgr.writeFromBuffer(gpu_values, values.data(), 64 * 4);
+  std::cout << "First 64 values after reduction:\n";
+  for (u32 i = 0; i < 64; i++) {
     std::cout << values[i] << '\n';
   }
   return 0;
