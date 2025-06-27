@@ -598,7 +598,7 @@ void appendOp(vk::CommandBuffer& b, Algorithm& a, u32 X, u32 Y, u32 Z) {
 Manager::~Manager() {
   device.waitIdle();
   device.destroyFence(fence);
-  if (window) {
+  if (window != nullptr) {
     instance.destroySurfaceKHR(surface);
   }
   vmaDestroyBuffer(allocator, staging, stagingAllocation);
@@ -874,9 +874,9 @@ Renderer::Renderer(Manager& manager, u32 nx, u32 ny) {
       manager.device, swapChainImageViews, renderPass, swapChainExtent);
 
   auto vert_code =
-      readFile<u32>(std::string(BasePath) + "Shaders/TexturedQuad.vert.spv");
+      readFile<u32>(std::string(BasePath) + "Shaders/quad.vert.spv");
   auto frag_code =
-      readFile<u32>(std::string(BasePath) + "Shaders/TexturedQuad.frag.spv");
+      readFile<u32>(std::string(BasePath) + "Shaders/quad.frag.spv");
 
   vk::ShaderModuleCreateInfo vert_MCI(vk::ShaderModuleCreateFlags(), vert_code);
   vk::ShaderModule vert_module = manager.device.createShaderModule(vert_MCI);
@@ -1047,15 +1047,15 @@ Renderer::Renderer(Manager& manager, u32 nx, u32 ny) {
   colormap.allocate(manager.allocator, img_alloc_create_info, colormapBCI);
   manager.writeToBuffer(colormap, cm::viridis.data(),
                         cm::viridis.size() * sizeof(cm::AlignedColor));
-  vk::BufferCreateInfo valueBCI({}, round_up_x16(ny * nx * sizeof(f32)),
+  vk::BufferCreateInfo valueBCI({}, ny * nx * sizeof(f32),
                                 vk::BufferUsageFlagBits::eStorageBuffer |
                                     vk::BufferUsageFlagBits::eTransferDst |
                                     vk::BufferUsageFlagBits::eTransferSrc);
-  vk::BufferCreateInfo minmaxBCI(
-      {}, round_up_x16(((ny * nx + 1) / 2) * sizeof(f32) + 4 * sizeof(f32)),
-      vk::BufferUsageFlagBits::eStorageBuffer |
-          vk::BufferUsageFlagBits::eTransferDst |
-          vk::BufferUsageFlagBits::eTransferSrc);
+  const u32 n_target = (ny * nx) / 16;
+  vk::BufferCreateInfo minmaxBCI({}, n_target * sizeof(f32),
+                                 vk::BufferUsageFlagBits::eStorageBuffer |
+                                     vk::BufferUsageFlagBits::eTransferDst |
+                                     vk::BufferUsageFlagBits::eTransferSrc);
   value_buffer.allocate(manager.allocator, img_alloc_create_info, valueBCI);
   minmax_buffer.allocate(manager.allocator, img_alloc_create_info, minmaxBCI);
   std::vector<f32> values(ny * nx);
@@ -1064,29 +1064,25 @@ Renderer::Renderer(Manager& manager, u32 nx, u32 ny) {
       values[nx * j + i] = (f32)(i + j);
     }
   }
-  p_mgr->writeToBuffer(value_buffer, values);
+  manager.writeToBuffer(value_buffer, values);
 
-  auto first_max_code =
-      readFile<u32>(std::string(BasePath) + "Shaders/firstmax.comp.spv");
-  first_max_reduction.initialize(
-      p_mgr->device, {}, {&value_buffer, &minmax_buffer}, first_max_code);
-  auto first_min_code =
-      readFile<u32>(std::string(BasePath) + "Shaders/firstmin.comp.spv");
-  first_min_reduction.initialize(
-      p_mgr->device, {}, {&value_buffer, &minmax_buffer}, first_min_code);
-  size_t push_size = 4;
-  auto max_code = readFile<u32>(std::string(BasePath) + "Shaders/max.comp.spv");
-  max_reduction.initialize(p_mgr->device, {}, {&minmax_buffer}, max_code,
-                           nullptr, nullptr, 0, &push_size, 1);
-  auto min_code = readFile<u32>(std::string(BasePath) + "Shaders/min.comp.spv");
-  min_reduction.initialize(p_mgr->device, {}, {&minmax_buffer}, min_code,
-                           nullptr, nullptr, 0, &push_size, 1);
+  auto first_minmax_code =
+      readFile<u32>(std::string(BasePath) + "Shaders/firstminmax.spv");
+  auto minmax_code =
+      readFile<u32>(std::string(BasePath) + "Shaders/minmax.spv");
+  const size_t reduction_spec_sizes = 4;
+  first_minmax_reduction.initialize(
+      manager.device, {}, {&value_buffer, &minmax_buffer}, first_minmax_code,
+      pcast<u8>(&n_target), &reduction_spec_sizes, 1);
+  minmax_reduction.initialize(manager.device, {}, {&minmax_buffer}, minmax_code,
+                              pcast<u8>(&n_target), &reduction_spec_sizes, 1);
 
   auto fill_code =
-      readFile<u32>(std::string(BasePath) + "Shaders/colormap.comp.spv");
+      readFile<u32>(std::string(BasePath) + "Shaders/colormap.spv");
   fill_colormap_img.initialize(p_mgr->device, {colormap_view},
                                {&colormap, &minmax_buffer, &value_buffer},
-                               fill_code);
+                               fill_code, pcast<u8>(&n_target),
+                               &reduction_spec_sizes, 1);
 
   vk::SamplerCreateInfo colormap_sampler_info(
       vk::SamplerCreateFlags(), vk::Filter::eNearest, vk::Filter::eNearest,
@@ -1151,10 +1147,14 @@ Renderer::Renderer(Manager& manager, u32 nx, u32 ny) {
   reduction_buffer.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader,
                                    vk::PipelineStageFlagBits::eComputeShader,
                                    {}, nullptr, nullptr, present_to_storage);
-  record_nondestructive_parallel_reduction(reduction_buffer, values.size(),
-                                           max_reduction, first_max_reduction);
-  record_nondestructive_parallel_reduction(reduction_buffer, values.size(),
-                                           min_reduction, first_min_reduction);
+  u32 X = (nx * ny) / 32;
+  appendOp(reduction_buffer, first_minmax_reduction, X, 1, 1);
+  X = (X + 31) / 32;
+  while (X > 1) {
+    appendOp(reduction_buffer, minmax_reduction, X, 1, 1);
+    X = (X + 31) / 32;
+  }
+  appendOp(reduction_buffer, minmax_reduction, 1, 1, 1);
   appendOp(reduction_buffer, fill_colormap_img, nx / 8, ny / 8, 1);
   vk::ImageMemoryBarrier storage_to_present{};
   storage_to_present.setOldLayout(vk::ImageLayout::eGeneral);

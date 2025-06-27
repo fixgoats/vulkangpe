@@ -16,6 +16,9 @@
 #include <vulkan/vulkan.h>
 
 using std::bit_cast;
+// Number of threads in subgroups is 32 on nvidia and some newer amd systems
+// 64 in older amd systems but also some newer ones.
+constexpr u32 WAVE_SIZE = 32;
 
 static const char* BasePath = SDL_GetBasePath();
 
@@ -74,43 +77,175 @@ f32 int_to_coord(u32 i, u32 nx, f32 start, f32 end) {
   return (end - start) * static_cast<f32>(i) / static_cast<f32>(nx) + start;
 }
 
-int benchmark_internal_vs_external_loop() {
+int test_first_min_max() {
   Manager mgr(10 * 1024 * 1024);
-  constexpr u32 n_elements = 4 * 1024;
-  std::vector<f32> values(n_elements);
-  for (u32 i = 0; i < n_elements; i++) {
-    values[i] = (f32)(n_elements - i);
+  constexpr u32 n_source = 64;
+  constexpr u32 n_target = n_source / 16;
+  std::vector<f32> values(n_source, 2.0);
+  /*for (u32 i = 0; i < n_source; i++) {
+    values[i] = 2.0;
+  }*/
+  values[n_source - 1] = -1000.;
+  values[n_source / 2] = -1001.;
+  values[n_source / 3] = 120.;
+  std::cout << "Copying to GPU\n";
+  MetaBuffer gpu_source = mgr.vecToBuffer(values);
+  MetaBuffer gpu_target = mgr.makeRawBuffer<f32>(n_target);
+  std::cout << "Number of elements in values: " << values.size() << '\n';
+  std::cout << "GPU source buffer size in bytes: " << gpu_source.aInfo.size
+            << '\n';
+  std::cout << "Done copying, initialising minimum reduction\n";
+  Algorithm firstminmax = mgr.makeAlgorithm<u32>(
+      "Shaders/firstminmax.spv", {}, {&gpu_source, &gpu_target}, n_target);
+  vk::CommandBuffer cb = mgr.beginRecord();
+  std::cout << "appending op\n";
+  u32 X = (n_source - 1 + WAVE_SIZE) / WAVE_SIZE;
+  std::cout << "Dispatching: " << X << " workgroups.\n"
+            << "Number of threads should be: " << X * 32 << '\n';
+  appendOp(cb, firstminmax, X, 1, 1);
+  cb.end();
+
+  std::cout << "Executing reduction\n";
+  mgr.execute(cb);
+  std::cout << "Copying from GPU\n";
+  mgr.writeFromBuffer(gpu_target, values.data(), (n_target) * 4);
+  std::cout << "Transferred values:\n";
+  for (u32 i = 0; i < (n_target); i++) {
+    std::cout << values[i] << '\n';
   }
+  return 0;
+}
+
+int test_complete_min_max() {
+  Manager mgr(10 * 1024 * 1024);
+  constexpr u32 n_source = 32 * 64;
+  constexpr u32 n_target = n_source / 16;
+  std::vector<f32> values(n_source, 2.0);
+  /*for (u32 i = 0; i < n_source; i++) {
+    values[i] = 2.0;
+  }*/
+  values[n_source - 1] = -1000.;
+  values[n_source / 2] = -1001.;
+  values[n_source / 3] = 120.;
+  std::cout << "Copying to GPU\n";
+  MetaBuffer gpu_source = mgr.vecToBuffer(values);
+  MetaBuffer gpu_target = mgr.makeRawBuffer<f32>(n_target);
+  std::cout << "Number of elements in values: " << values.size() << '\n';
+  std::cout << "GPU source buffer size in bytes: " << gpu_source.aInfo.size
+            << '\n';
+  std::cout << "Done copying, initialising minimum reduction\n";
+  Algorithm firstminmax = mgr.makeAlgorithm(
+      "Shaders/firstminmax.spv", {}, {&gpu_source, &gpu_target}, n_target);
+  Algorithm findminmax =
+      mgr.makeAlgorithm("Shaders/minmax.spv", {}, {&gpu_target}, n_target);
+  vk::CommandBuffer cb = mgr.beginRecord();
+  std::cout << "appending op\n";
+  u32 X = (n_source - 1 + WAVE_SIZE) / WAVE_SIZE;
+  std::cout << "Dispatching: " << X << " workgroups.\n"
+            << "Number of threads should be: " << X * 32 << '\n';
+  appendOp(cb, firstminmax, X, 1, 1);
+  X = (X - 1 + WAVE_SIZE) / WAVE_SIZE;
+  while (X > 1) {
+    appendOp(cb, findminmax, X, 1, 1);
+    X = (X + WAVE_SIZE - 1) / WAVE_SIZE;
+  }
+  appendOp(cb, findminmax, 1, 1, 1);
+  cb.end();
+
+  std::cout << "Executing reduction\n";
+  mgr.execute(cb);
+  std::cout << "Copying from GPU\n";
+  mgr.writeFromBuffer(gpu_target, values.data(), (n_target) * 4);
+  std::cout << "Transferred values:\n";
+  for (u32 i = 0; i < (n_target); i++) {
+    std::cout << values[i] << '\n';
+  }
+  return 0;
+}
+
+// forget the benchmark actually, looping externally should be fine
+int test_min_max() {
+  Manager mgr(10 * 1024 * 1024);
+  u32 sharedDataSize = std::min(
+      1024u,
+      static_cast<u32>(
+          mgr.physicalDevice.getProperties().limits.maxComputeSharedMemorySize /
+          sizeof(f32)));
+  constexpr u32 n_elements = 3 * 1024 * 1024 + 32;
+  std::vector<f32> values(n_elements, 2.0);
+  /*for (u32 i = 0; i < n_elements; i++) {
+    values[i] = 2.0;
+  }*/
   values[n_elements - 1] = -1000.;
+  values[n_elements / 2] = -1001.;
+  values[n_elements / 3] = 120.;
   std::cout << "Copying to GPU\n";
   MetaBuffer gpu_values = mgr.vecToBuffer(values);
   std::cout << "Number of elements in values: " << values.size() << '\n';
   std::cout << "GPU buffer size in bytes: " << gpu_values.aInfo.size << '\n';
   std::cout << "Done copying, initialising minimum reduction\n";
   size_t pushSize = 4;
-  Algorithm findminloop =
-      mgr.makeAlgorithmRaw("Shaders/findminloop.spv", {}, {&gpu_values},
-                           nullptr, nullptr, 0, &pushSize, 1);
+  Algorithm findminmax = mgr.makeAlgorithm<u32>("Shaders/minmax.spv", {},
+                                                {&gpu_values}, n_elements);
   vk::CommandBuffer cb = mgr.beginRecord();
-  u32 stride = (n_elements + 1) / 2;
-  std::cout << "pushing constants\n";
-  cb.pushConstants(findminloop.m_PipelineLayout,
-                   vk::ShaderStageFlagBits::eCompute, 0, 4, &stride);
   std::cout << "appending op\n";
-  u32 X = (stride + 63) / 64;
+  u32 X = (n_elements - 1 + WAVE_SIZE) / WAVE_SIZE;
   std::cout << "Dispatching: " << X << " workgroups.\n"
-            << "Number of threads should be: " << X * 64 << '\n';
-  appendOp(cb, findminloop, X, 1, 1);
+            << "Number of threads should be: " << X * 32 << '\n';
+  while (X > 1) {
+    appendOp(cb, findminmax, X, 1, 1);
+    X = (X + WAVE_SIZE - 1) / WAVE_SIZE;
+  }
+  appendOp(cb, findminmax, 1, 1, 1);
   cb.end();
 
   std::cout << "Executing reduction\n";
   mgr.execute(cb);
   std::cout << "Copying from GPU\n";
-  mgr.writeFromBuffer(gpu_values, values.data(), 64 * 4);
-  std::cout << "First 64 values after reduction:\n";
-  for (u32 i = 0; i < 64; i++) {
+  mgr.writeFromBuffer(gpu_values, values.data(), n_elements * 4);
+  std::cout << "First 128 values after reduction:\n";
+  for (u32 i = 0; i < 1; i++) {
     std::cout << values[i] << '\n';
   }
+  std::cout << values[n_elements - 1] << '\n';
+  return 0;
+}
+
+int test_graphical() {
+  auto window = create_window_sdl("Bleh", SDL_WINDOW_RESIZABLE);
+  {
+    Manager mgr(10 * 1024 * 1024, window);
+    Renderer renderer(mgr, sc.nx, sc.ny);
+    bool running = true;
+    while (running) {
+      SDL_Event event;
+      while (SDL_PollEvent(&event)) {
+        if (event.type == SDL_EVENT_QUIT ||
+            (event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED &&
+             event.window.windowID == SDL_GetWindowID(window))) {
+          running = false;
+          break;
+        }
+        if (SDL_GetWindowFlags(window) & SDL_WINDOW_MINIMIZED) {
+          SDL_Delay(10);
+          continue;
+        }
+      }
+      renderer.drawFrame();
+    }
+    std::vector<float> lets_take_a_peek(512 * 512);
+    mgr.writeFromBuffer(renderer.value_buffer, lets_take_a_peek.data(),
+                        512 * 512);
+    std::ofstream f;
+    f.open("valuedata.csv");
+    writeCsv(f, lets_take_a_peek, 512, 512);
+    std::vector<f32> minmax_data(512 * 512 / 16);
+    mgr.writeFromBuffer(renderer.minmax_buffer, minmax_data.data(),
+                        512 * 512 / 16);
+    f.open("minmaxdata.csv");
+    writeCsv(f, minmax_data, 512, 512 / 16);
+  }
+  SDL_DestroyWindow(window);
   return 0;
 }
 
@@ -247,5 +382,6 @@ int execute_graphical() {
 }
 
 int main(int argc, char* argv[]) {
-  return benchmark_internal_vs_external_loop();
+  int ret_val = test_graphical();
+  return ret_val;
 }

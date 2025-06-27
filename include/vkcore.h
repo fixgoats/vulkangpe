@@ -360,10 +360,8 @@ struct Renderer {
   vk::PresentModeKHR present_mode;
   MetaBuffer value_buffer;
   MetaBuffer minmax_buffer;
-  Algorithm first_max_reduction;
-  Algorithm first_min_reduction;
-  Algorithm max_reduction;
-  Algorithm min_reduction;
+  Algorithm first_minmax_reduction;
+  Algorithm minmax_reduction;
   Algorithm fill_colormap_img;
   u32 n_images;
   bool frameBufferResized;
