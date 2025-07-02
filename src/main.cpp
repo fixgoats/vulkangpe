@@ -244,7 +244,9 @@ int test_graphical() {
                         512 * 512 / 16);
     f.open("minmaxdata.csv");
     writeCsv(f, minmax_data, 512, 512 / 16);
+    std::cout << window << std::endl;
   }
+  std::cout << window << std::endl;
   SDL_DestroyWindow(window);
   return 0;
 }

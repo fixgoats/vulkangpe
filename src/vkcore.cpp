@@ -349,7 +349,10 @@ std::set<std::string> get_supported_extensions() {
 
 static const std::string appName{"Vulkan GPE Simulator"};
 static const std::string engineName{"argablarg"};
-Manager::Manager(size_t stagingSize, SDL_Window* window) {
+Manager::Manager(size_t stagingSize, SDL_Window* _window) {
+  if (_window) {
+    window = _window;
+  }
   vk::ApplicationInfo appInfo{appName.c_str(), 1, engineName.c_str(), 1,
                               VK_API_VERSION_1_3};
   // Validation layers are extremely helpful, we'll only turn them off if we
@@ -387,8 +390,10 @@ Manager::Manager(size_t stagingSize, SDL_Window* window) {
 
   std::vector<u32> qfis;
   if (window) {
-    SDL_Vulkan_CreateSurface(window, instance, nullptr,
-                             pcast<VkSurfaceKHR>(&surface));
+    if (!SDL_Vulkan_CreateSurface(window, instance, nullptr,
+                                  pcast<VkSurfaceKHR>(&surface))) {
+      SDL_Log("CreateSurface failed with error: %s", SDL_GetError());
+    }
   }
   qfis.push_back(get_compute_queue_family_index(physicalDevice));
   if (window) {
@@ -730,10 +735,12 @@ void Algorithm::initialize(vk::Device device,
   // it should be fine.
   std::vector<vk::DescriptorPoolSize> dPSes;
   if (img_views.size() > 0) {
-    dPSes.emplace_back(vk::DescriptorType::eStorageImage, 1);
+    dPSes.emplace_back(vk::DescriptorType::eStorageImage,
+                       static_cast<u32>(img_views.size()));
   }
   if (buffers.size() > 0) {
-    dPSes.emplace_back(vk::DescriptorType::eStorageBuffer, 1);
+    dPSes.emplace_back(vk::DescriptorType::eStorageBuffer,
+                       static_cast<u32>(buffers.size()));
   }
   vk::DescriptorPoolCreateInfo dPCI(
       vk::DescriptorPoolCreateFlags(
@@ -1027,7 +1034,6 @@ Renderer::Renderer(Manager& manager, u32 nx, u32 ny) {
       {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1});
   initialbarrier.setSrcAccessMask({});
   initialbarrier.setDstAccessMask(vk::AccessFlagBits::eShaderRead);
-  std::cout << "onetimesubmit pipelinebarrier\n";
   oneTimeSubmit(manager.device, manager.commandPool, manager.queue,
                 [&](vk::CommandBuffer b) {
                   b.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader,
@@ -1143,7 +1149,6 @@ Renderer::Renderer(Manager& manager, u32 nx, u32 ny) {
   present_to_storage.setImage(colormap_img.img);
   present_to_storage.setSubresourceRange(
       {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1});
-  std::cout << "present_to_storage barrier\n";
   reduction_buffer.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader,
                                    vk::PipelineStageFlagBits::eComputeShader,
                                    {}, nullptr, nullptr, present_to_storage);
@@ -1166,11 +1171,16 @@ Renderer::Renderer(Manager& manager, u32 nx, u32 ny) {
   storage_to_present.setImage(colormap_img.img);
   storage_to_present.setSubresourceRange(
       {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1});
-  std::cout << "storage_to_present barrier\n";
   reduction_buffer.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader,
                                    vk::PipelineStageFlagBits::eComputeShader,
                                    {}, nullptr, nullptr, storage_to_present);
   reduction_buffer.end();
+  oneTimeSubmit(manager.device, manager.commandPool, manager.queue,
+                [&](vk::CommandBuffer b) {
+                  b.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader,
+                                    vk::PipelineStageFlagBits::eComputeShader,
+                                    {}, nullptr, nullptr, storage_to_present);
+                });
   for (size_t i = 0; i < n_images; i++) {
     commandBuffers[i].begin(begin_info);
     record_drawing_commands(swapChainFrameBuffers[i], renderPass,
