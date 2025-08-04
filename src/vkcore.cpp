@@ -826,8 +826,10 @@ Renderer::Renderer(Manager& manager, u32 nx, u32 ny) {
                                         capabilities.maxImageExtent.height);
   }
 
-  n_images =
-      std::clamp(3u, capabilities.minImageCount, capabilities.maxImageCount);
+  n_images = capabilities.maxImageCount == 0
+                 ? 3u
+                 : std::clamp(3u, capabilities.minImageCount,
+                              capabilities.minImageCount);
   vk::SurfaceTransformFlagBitsKHR pre_transform =
       (capabilities.supportedTransforms &
        vk::SurfaceTransformFlagBitsKHR::eIdentity)
@@ -1098,7 +1100,8 @@ Renderer::Renderer(Manager& manager, u32 nx, u32 ny) {
       vk::CompareOp::eNever, 0.0f, 0.0f, vk::BorderColor::eFloatOpaqueWhite);
   colormap_sampler = manager.device.createSampler(colormap_sampler_info);
 
-  vk::DescriptorPoolSize pool_size({}, MAX_FRAMES_IN_FLIGHT);
+  vk::DescriptorPoolSize pool_size(vk::DescriptorType::eCombinedImageSampler,
+                                   MAX_FRAMES_IN_FLIGHT);
   descriptorPool = manager.device.createDescriptorPool(
       {vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet, n_images, 1,
        &pool_size});
@@ -1296,7 +1299,7 @@ void Renderer::drawFrame() {
     vk::PresentInfoKHR pres_info(signal_semaphore, swapchain, imageIndex);
     try {
       if (vk::Result::eSuboptimalKHR == presentQueue.presentKHR(pres_info)) {
-        std::cout << "Recreating swapchain because of suboptimal\n";
+        std::cout << "Recreating swapchain because it is suboptimal\n";
         recreateSwapchain();
       }
     } catch (vk::OutOfDateKHRError& out_of_date_error) {

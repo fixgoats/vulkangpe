@@ -384,6 +384,6 @@ int execute_graphical() {
 }
 
 int main(int argc, char* argv[]) {
-  int ret_val = test_graphical();
+  int ret_val = execute_graphical();
   return ret_val;
 }

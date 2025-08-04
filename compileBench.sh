@@ -4,3 +4,6 @@ slangc shaders/firstminmax.slang -profile glsl_450+spvGroupNonUniformArithmetic 
 slangc shaders/colormap.slang -profile glsl_450 -target spirv -o build/Shaders/colormap.spv -entry writecolor
 slangc shaders/quad.slang -profile glsl_450 -target spirv -o build/Shaders/quad.vert.spv -entry vertexMain
 slangc shaders/quad.slang -profile glsl_450 -target spirv -o build/Shaders/quad.frag.spv -entry fragmentMain
+slangc shaders/rstep.slang -profile glsl_450 -target spirv -o build/Shaders/rstep.spv -entry rstep
+slangc shaders/rstep.slang -profile glsl_450 -target spirv -o build/Shaders/finalstep.spv -entry finalstep
+slangc shaders/kstep.slang -profile glsl_450 -target spirv -o build/Shaders/kstep.spv -entry kstep

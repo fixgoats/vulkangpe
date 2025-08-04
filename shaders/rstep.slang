@@ -66,6 +66,6 @@ void finalstep(uint3 threadId: SV_DispatchThreadID) {
   float p = pump[i];
   float3 b = float3(1., 2., 3.) * float3(3., 2., 4.);
   psir[i] = c_mul(halfRTimeEvo(psir[i], nR[i], p), psir[i]);
-  nR[i] = RK4Step(nR[i], dt, p, oldpsir[i], psir[i]);
+  nR[i] = RK4Step(nR[i], p, oldpsir[i], psir[i]);
 }
 
