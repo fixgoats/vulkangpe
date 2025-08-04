@@ -670,24 +670,29 @@ create_image_views(vk::Device device, vk::SurfaceFormatKHR surface_format,
   return swapchain_image_views;
 }
 
-void Algorithm::initialize(vk::Device device,
-                           const std::vector<vk::ImageView>& img_views,
-                           const std::vector<MetaBuffer*>& buffers,
-                           const std::vector<u32>& spirv, const u8* specConsts,
-                           const size_t* sizes, size_t nConsts,
-                           const size_t* pushSizes, size_t nPushConstants) {
+void Algorithm::initialize(vk::Device device, u32 n_imgs, u32 n_buffers,
+                           u32 n_ubo, const std::vector<u32>& spirv,
+                           const u8* specConsts, const size_t* sizes,
+                           size_t nConsts, const size_t* pushSizes,
+                           size_t nPushConstants) {
   m_device = device;
   vk::ShaderModuleCreateInfo shaderMCI(vk::ShaderModuleCreateFlags(), spirv);
   m_ShaderModule = device.createShaderModule(shaderMCI);
-  std::vector<vk::DescriptorSetLayoutBinding> dSLBs(img_views.size() +
-                                                    buffers.size());
-  for (u32 i = 0; i < img_views.size(); i++) {
-    dSLBs[i] = {i, vk::DescriptorType::eStorageImage, 1,
-                vk::ShaderStageFlagBits::eCompute};
-  }
-  for (u32 i = img_views.size(); i < buffers.size() + img_views.size(); i++) {
-    dSLBs[i] = {i, vk::DescriptorType::eStorageBuffer, 1,
-                vk::ShaderStageFlagBits::eCompute};
+  std::vector<vk::DescriptorSetLayoutBinding> dSLBs(n_imgs + n_buffers + n_ubo);
+  {
+    u32 i = 0;
+    for (; i < n_imgs; i++) {
+      dSLBs[i] = {i, vk::DescriptorType::eStorageImage, 1,
+                  vk::ShaderStageFlagBits::eCompute};
+    }
+    for (; i < n_buffers + n_imgs; i++) {
+      dSLBs[i] = {i, vk::DescriptorType::eStorageBuffer, 1,
+                  vk::ShaderStageFlagBits::eCompute};
+    }
+    for (; i < n_buffers + n_imgs + n_ubo; i++) {
+      dSLBs[i] = {i, vk::DescriptorType::eUniformBuffer, 1,
+                  vk::ShaderStageFlagBits::eCompute};
+    }
   }
   vk::DescriptorSetLayoutCreateInfo dSLCI(vk::DescriptorSetLayoutCreateFlags(),
                                           dSLBs);
@@ -734,13 +739,14 @@ void Algorithm::initialize(vk::Device device,
   // should be memory, and I'm not going to make thousands of these so
   // it should be fine.
   std::vector<vk::DescriptorPoolSize> dPSes;
-  if (img_views.size() > 0) {
-    dPSes.emplace_back(vk::DescriptorType::eStorageImage,
-                       static_cast<u32>(img_views.size()));
+  if (n_imgs > 0) {
+    dPSes.emplace_back(vk::DescriptorType::eStorageImage, n_imgs);
   }
-  if (buffers.size() > 0) {
-    dPSes.emplace_back(vk::DescriptorType::eStorageBuffer,
-                       static_cast<u32>(buffers.size()));
+  if (n_buffers > 0) {
+    dPSes.emplace_back(vk::DescriptorType::eStorageBuffer, n_buffers);
+  }
+  if (n_ubo > 0) {
+    dPSes.emplace_back(vk::DescriptorType::eUniformBuffer, n_ubo);
   }
   vk::DescriptorPoolCreateInfo dPCI(
       vk::DescriptorPoolCreateFlags(
@@ -750,8 +756,14 @@ void Algorithm::initialize(vk::Device device,
   vk::DescriptorSetAllocateInfo dSAI(m_DescriptorPool, 1, &m_DSL);
   auto descriptorSets = device.allocateDescriptorSets(dSAI);
   m_DescriptorSet = descriptorSets[0];
+}
+
+void Algorithm::bindData(const std::vector<vk::ImageView>& img_views,
+                         const std::vector<MetaBuffer*>& buffers,
+                         const std::vector<MetaBuffer*>& ubos) {
   std::vector<vk::DescriptorImageInfo> dIIs(img_views.size());
   std::vector<vk::DescriptorBufferInfo> dBIs(buffers.size());
+  std::vector<vk::DescriptorBufferInfo> dUBIs(ubos.size());
   for (size_t i = 0; i < dIIs.size(); i++) {
     dIIs[i] = {{}, img_views[i], vk::ImageLayout::eGeneral};
   }
@@ -759,22 +771,38 @@ void Algorithm::initialize(vk::Device device,
     dBIs[i] =
         vk::DescriptorBufferInfo(buffers[i]->buffer, 0, buffers[i]->aInfo.size);
   }
-  std::vector<vk::WriteDescriptorSet> writeDescriptorSets(dIIs.size() +
-                                                          dBIs.size());
-  for (u32 i = 0; i < dIIs.size(); i++) {
-    writeDescriptorSets[i] = {m_DescriptorSet, i, 0,
-                              vk::DescriptorType::eStorageImage, dIIs[i]};
+  for (size_t i = 0; i < dUBIs.size(); i++) {
+    dBIs[i] = vk::DescriptorBufferInfo(ubos[i]->buffer, 0, ubos[i]->aInfo.size);
   }
-  for (u32 i = dIIs.size(); i < dIIs.size() + dBIs.size(); i++) {
-    writeDescriptorSets[i] = {m_DescriptorSet,
-                              i,
-                              0,
-                              1,
-                              vk::DescriptorType::eStorageBuffer,
-                              nullptr,
-                              &dBIs[i - dIIs.size()]};
+
+  std::vector<vk::WriteDescriptorSet> writeDescriptorSets(
+      dIIs.size() + dBIs.size() + dUBIs.size());
+  {
+    u32 i = 0;
+    for (; i < dIIs.size(); i++) {
+      writeDescriptorSets[i] = {m_DescriptorSet, i, 0,
+                                vk::DescriptorType::eStorageImage, dIIs[i]};
+    }
+    for (; i < dIIs.size() + dBIs.size(); i++) {
+      writeDescriptorSets[i] = {m_DescriptorSet,
+                                i,
+                                0,
+                                1,
+                                vk::DescriptorType::eStorageBuffer,
+                                nullptr,
+                                &dBIs[i - dIIs.size()]};
+    }
+    for (; i < dIIs.size() + dBIs.size() + dUBIs.size(); i++) {
+      writeDescriptorSets[i] = {m_DescriptorSet,
+                                i,
+                                0,
+                                1,
+                                vk::DescriptorType::eUniformBuffer,
+                                nullptr,
+                                &dUBIs[i - dIIs.size() - dBIs.size()]};
+    }
   }
-  device.updateDescriptorSets(writeDescriptorSets, {});
+  m_device.updateDescriptorSets(writeDescriptorSets, {});
 }
 
 Renderer::Renderer(Manager& manager, u32 nx, u32 ny) {

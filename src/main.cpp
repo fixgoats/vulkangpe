@@ -22,6 +22,19 @@ constexpr u32 WAVE_SIZE = 32;
 
 static const char* BasePath = SDL_GetBasePath();
 
+struct Dispatch {
+  u32 nx;
+  u32 ny;
+  u32 nz;
+  u32 xgroups;
+  u32 ygroups;
+  u32 zgroups;
+
+  u32 X() { return (nx + xgroups - 1) / xgroups; }
+  u32 Y() { return (ny + ygroups - 1) / ygroups; }
+  u32 Z() { return (nz + zgroups - 1) / zgroups; }
+};
+
 SDL_Window* create_window_sdl(const char* window_name = "", u32 flags = 0) {
   SDL_Init(SDL_INIT_VIDEO);
   if (!SDL_Vulkan_LoadLibrary(nullptr)) {

@@ -151,12 +151,13 @@ struct Algorithm {
             const std::vector<u32>& spirv, const u8* specConsts = nullptr,
             const size_t* sizes = nullptr, size_t nConsts = 0,
             const size_t* pushSizes = nullptr, size_t nPushConstants = 0);
-  void initialize(vk::Device device,
-                  const std::vector<vk::ImageView>& img_views,
-                  const std::vector<MetaBuffer*>& buffers,
+  void initialize(vk::Device device, u32 n_imgs, u32 n_buffers, u32 n_ubo,
                   const std::vector<u32>& spirv, const u8* specConsts = nullptr,
                   const size_t* sizes = nullptr, size_t nConsts = 0,
                   const size_t* pushSizes = nullptr, size_t nPushConstants = 0);
+  void bindData(const std::vector<vk::ImageView>& img_views,
+                const std::vector<MetaBuffer*>& buffers,
+                const std::vector<MetaBuffer*>& ubos);
   ~Algorithm();
 };
 
