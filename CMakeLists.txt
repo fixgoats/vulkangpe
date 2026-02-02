@@ -20,30 +20,33 @@ target_compile_options(${MAIN_TARGET} PRIVATE -Wall -Wextra -Wpedantic)
 
 add_definitions(-DVKFFT_BACKEND=${VKFFT_BACKEND})
 target_compile_definitions(VulkanCompute PUBLIC -DVK_API_VERSION=13)
-target_include_directories(${MAIN_TARGET} PRIVATE include)
+target_include_directories(${MAIN_TARGET} PRIVATE include external/eigen-5.0.1)
+add_library(vkfft INTERFACE IMPORTED GLOBAL)
+target_link_libraries(vkfft INTERFACE glslang::MachineIndependent glslang::OSDependent glslang::GenericCodeGen glslang::SPIRV)
+set_target_properties(vkfft PROPERTIES INTERFACE_INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR}/external/vkFFT)
 
-find_package(Vulkan REQUIRED)
+find_package(Vulkan REQUIRED COMPONENTS glslang SPIRV-Tools)
 find_package(glslang REQUIRED)
 find_package(HDF5 REQUIRED COMPONENTS C HL)
-include(ExternalProject)
-set(EIGEN_INSTALL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/eigen-install/")
-ExternalProject_Add(
-  eigen
-  URL https://gitlab.com/libeigen/eigen/-/archive/5.0.1/eigen-5.0.1.tar.gz
-  SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/eigen-src"
-  BINARY_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/eigen-build"
-  INSTALL_DIR "${EIGEN_INSTALL_DIR}"
-  CMAKE_ARGS
-  -DCMAKE_INSTALL_PREFIX:PATH=<INSTALL_DIR>
-  -DCMAKE_BUILD_TYPE=Release
-)
-
-file(MAKE_DIRECTORY ${EIGEN_INSTALL_DIR}/include)
-add_library(eigenlib INTERFACE IMPORTED GLOBAL)
-add_dependencies(eigenlib eigen)
-target_compile_features(eigenlib INTERFACE cxx_std_23)
-set_target_properties(eigenlib PROPERTIES INTERFACE_INCLUDE_DIRECTORIES ${EIGEN_INSTALL_DIR}/include/eigen5)
-target_include_directories(${MAIN_TARGET} INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/external/vkFFT/)
+# include(ExternalProject)
+# set(EIGEN_INSTALL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/eigen-install/")
+# ExternalProject_Add(
+#   eigen
+#   URL https://gitlab.com/libeigen/eigen/-/archive/5.0.1/eigen-5.0.1.tar.gz
+#   SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/eigen-src"
+#   BINARY_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/eigen-build"
+#   INSTALL_DIR "${EIGEN_INSTALL_DIR}"
+#   CMAKE_ARGS
+#   -DCMAKE_INSTALL_PREFIX:PATH=<INSTALL_DIR>
+#   -DCMAKE_BUILD_TYPE=Release
+# )
+#
+# file(MAKE_DIRECTORY ${EIGEN_INSTALL_DIR}/include)
+# file(MAKE_DIRECTORY ${EIGEN_INSTALL_DIR}/include)
+# add_library(eigenlib INTERFACE IMPORTED GLOBAL)
+# add_dependencies(eigenlib eigen)
+# target_compile_features(eigenlib INTERFACE cxx_std_23)
+# set_target_properties(eigenlib PROPERTIES INTERFACE_INCLUDE_DIRECTORIES ${EIGEN_INSTALL_DIR}/include/eigen5)
 # find_package(glslang REQUIRED)
 # find_package(SDL3 REQUIRED CONFIG)
 # find_package(VulkanMemoryAllocator CONFIG REQUIRED)
@@ -61,7 +64,5 @@ else()
 endif()
 
 
-# install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/vkFFT/" DESTINATION include)
-# install(TARGETS ${PROJECT_NAME} DESTINATION bin)
 target_precompile_headers(${MAIN_TARGET} PRIVATE include/hack.hpp)
-target_link_libraries(${MAIN_TARGET} PRIVATE SPIRV Vulkan::Vulkan glslang::MachineIndependent glslang::OSDependent glslang::GenericCodeGen glslang::SPIRV hdf5::hdf5)
+target_link_libraries(${MAIN_TARGET} PRIVATE vkfft Vulkan::Vulkan hdf5::hdf5)

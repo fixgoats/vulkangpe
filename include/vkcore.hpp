@@ -5,7 +5,7 @@
 #include "metaprogramming.hpp"
 #include "typedefs.hpp"
 // #include "vkFFT.h"
-#include "vk_mem_alloc.h"
+#include "vma/vk_mem_alloc.h"
 #include <boost/pfr/core.hpp>
 #include <chrono>
 #include <cstddef>

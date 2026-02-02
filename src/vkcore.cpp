@@ -6,7 +6,6 @@
 #include <vulkan/vulkan_handles.hpp>
 #define VMA_IMPLEMENTATION 1003000
 // #include "colormaps.hpp"
-#include "vk_mem_alloc.h"
 #include "vkcore.hpp"
 #include <cstdint>
 #include <iostream>

@@ -1,13 +1,12 @@
 #include "hack.hpp"
 #include "vkFFT.h"
-#include "vk_mem_alloc.h"
 #include <cmath>
 #include <cstring>
 #include <cxxopts.hpp>
 #include <iostream>
 
 // #include "colormaps.hpp"
-#include "eigen3/Eigen/Dense"
+#include "Eigen/Dense"
 #include "mathhelpers.hpp"
 #include "typedefs.hpp"
 #include "vkcore.hpp"
