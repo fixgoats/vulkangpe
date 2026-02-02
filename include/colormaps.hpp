@@ -1,12 +1,11 @@
 #pragma once
-#include "typedefs.h"
+#include "typedefs.hpp"
 #include <array>
 
-namespace cm {
 struct AlignedColor {
   vec3<f32> rgb;
-  f32 pad = 1.0;
-  constexpr AlignedColor(f32 x, f32 y, f32 z) : rgb{x, y, z}, pad{1.0} {}
+  f32 pad = 0;
+  AlignedColor(f32 x, f32 y, f32 z) : rgb{x, y, z}, pad = 0 {}
 };
 // magma, inferno, plasma, viridis by Nathaniel J. Smith, Stefan van der Walt
 // and Eric Firing. CC0
@@ -817,4 +816,3 @@ constexpr std::array<AlignedColor, 256> icefire = {
      {0.98913325, 0.77695637, 0.60321626}, {0.99119918, 0.78771716, 0.61775821},
      {0.9932672, 0.79848979, 0.63231691},  {0.99535958, 0.80926704, 0.64687278},
      {0.99740544, 0.82008078, 0.66150571}, {0.9992197, 0.83100723, 0.6764127}}};
-} // namespace cm

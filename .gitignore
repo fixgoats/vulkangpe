@@ -5,3 +5,4 @@ log.txt
 err.txt
 env/
 *.json
+external/

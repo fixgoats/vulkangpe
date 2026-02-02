@@ -1,21 +1,19 @@
-#include "mathhelpers.h"
+#include "mathhelpers.hpp"
 #include <cmath>
 #include <cstddef>
 #include <format>
 #include <vulkan/vulkan.hpp>
 #include <vulkan/vulkan_handles.hpp>
 #define VMA_IMPLEMENTATION 1003000
-#include "SDL3/SDL.h"
-#include "SDL3/SDL_vulkan.h"
-#include "colormaps.hpp"
+// #include "colormaps.hpp"
 #include "vk_mem_alloc.h"
-#include "vkcore.h"
+#include "vkcore.hpp"
 #include <cstdint>
 #include <iostream>
 #include <set>
 
 constexpr size_t MAX_FRAMES_IN_FLIGHT = 2;
-static const char* BasePath = SDL_GetBasePath();
+// static const char* BasePath = SDL_GetBasePath();
 
 u32 get_compute_queue_family_index(vk::PhysicalDevice phys_dev) {
   auto queue_family_props = phys_dev.getQueueFamilyProperties();
@@ -231,14 +229,12 @@ AllocatedImage::~AllocatedImage() {
   vmaDestroyImage(*p_allocator, img, allocation);
 }
 
-Algorithm::Algorithm(vk::Device device,
-                     const std::vector<vk::ImageView>& img_views,
-                     const std::vector<MetaBuffer*>& buffers,
+Algorithm::Algorithm(vk::Device device, u32 img_views, u32 buffers, u32 n_ubo,
                      const std::vector<u32>& spirv, const u8* specConsts,
                      const size_t* sizes, size_t nConsts,
                      const size_t* pushSizes, size_t nPushConstants) {
-  initialize(device, img_views, buffers, spirv, specConsts, sizes, nConsts,
-             pushSizes, nPushConstants);
+  initialize(device, img_views, buffers, n_ubo, spirv, specConsts, sizes,
+             nConsts, pushSizes, nPushConstants);
 }
 
 Algorithm::~Algorithm() {
@@ -349,10 +345,10 @@ std::set<std::string> get_supported_extensions() {
 
 static const std::string appName{"Vulkan GPE Simulator"};
 static const std::string engineName{"argablarg"};
-Manager::Manager(size_t stagingSize, SDL_Window* _window) {
-  if (_window) {
-    window = _window;
-  }
+Manager::Manager(size_t stagingSize /*,  SDL_Window* _window */) {
+  // if (_window) {
+  //   window = _window;
+  // }
   vk::ApplicationInfo appInfo{appName.c_str(), 1, engineName.c_str(), 1,
                               VK_API_VERSION_1_3};
   // Validation layers are extremely helpful, we'll only turn them off if we
@@ -364,19 +360,21 @@ Manager::Manager(size_t stagingSize, SDL_Window* _window) {
   std::cout << "Running debug build\n";
 #endif // DEBUG
   u32 instance_extension_count = 0;
-  char const* const* instance_extensions = [&]() {
+  char const* const* instance_extensions = nullptr;
+  /*char const* const* instance_extensions = [&]() {
     if (window) {
       return SDL_Vulkan_GetInstanceExtensions(&instance_extension_count);
     }
     return (char const* const*)nullptr;
-  }();
+  }();*/
   // const std::vector<const char*> instanceExtensions = ;
-  const std::vector<const char*> deviceExtensions = [&]() {
+  const std::vector<const char*> deviceExtensions{};
+  /* const std::vector<const char*> deviceExtensions = [&]() {
     if (window) {
       return std::vector<const char*>{vk::KHRSwapchainExtensionName};
     }
     return std::vector<const char*>{};
-  }();
+  }(); */
   vk::InstanceCreateInfo iCI(vk::InstanceCreateFlags(), &appInfo, layers.size(),
                              layers.data(), instance_extension_count,
                              instance_extensions);
@@ -389,14 +387,14 @@ Manager::Manager(size_t stagingSize, SDL_Window* _window) {
   physicalDevice = pickPhysicalDevice(instance);
 
   std::vector<u32> qfis;
-  if (window) {
+  /*if (window) {
     if (!SDL_Vulkan_CreateSurface(window, instance, nullptr,
                                   pcast<VkSurfaceKHR>(&surface))) {
       SDL_Log("CreateSurface failed with error: %s", SDL_GetError());
     }
-  }
+  }*/
   qfis.push_back(get_compute_queue_family_index(physicalDevice));
-  if (window) {
+  /*if (window) {
     auto gpqfis =
         get_graphics_present_queue_family_indices(physicalDevice, surface);
     if (gpqfis[0] == gpqfis[1]) {
@@ -411,7 +409,7 @@ Manager::Manager(size_t stagingSize, SDL_Window* _window) {
         qfis.push_back(gpqfis[1]);
       }
     }
-  }
+  }*/
   cQFI = qfis[0];
 
   float queuePriority = 1.0f;
@@ -571,15 +569,14 @@ void Manager::executeNoSync(vk::CommandBuffer& b) {
 
 void Manager::queueWaitIdle() { queue.waitIdle(); }
 
-Algorithm Manager::makeAlgorithmRaw(std::string spirvname,
-                                    const std::vector<vk::ImageView>& images,
-                                    const std::vector<MetaBuffer*>& buffers,
+Algorithm Manager::makeAlgorithmRaw(std::string spirvName, u32 nImgViews,
+                                    u32 nBuffers, u32 nUBOs,
                                     const u8* specConsts, const size_t* sizes,
                                     size_t nConsts, const size_t* pushSizes,
                                     size_t nPushConstants) {
-  const auto spirv = readFile<u32>(spirvname);
-  return Algorithm(device, images, buffers, spirv, specConsts, sizes, nConsts,
-                   pushSizes, nPushConstants);
+  const auto spirv = readFile<u32>(spirvName);
+  return Algorithm(device, nImgViews, nBuffers, nUBOs, spirv, specConsts, sizes,
+                   nConsts, pushSizes, nPushConstants);
 }
 
 void appendOpNoBarrier(vk::CommandBuffer& b, Algorithm& a, u32 X, u32 Y,
@@ -603,9 +600,9 @@ void appendOp(vk::CommandBuffer& b, Algorithm& a, u32 X, u32 Y, u32 Z) {
 Manager::~Manager() {
   device.waitIdle();
   device.destroyFence(fence);
-  if (window != nullptr) {
+  /*if (window != nullptr) {
     instance.destroySurfaceKHR(surface);
-  }
+  }*/
   vmaDestroyBuffer(allocator, staging, stagingAllocation);
   vmaDestroyAllocator(allocator);
   device.destroyCommandPool(commandPool);
@@ -805,7 +802,7 @@ void Algorithm::bindData(const std::vector<vk::ImageView>& img_views,
   m_device.updateDescriptorSets(writeDescriptorSets, {});
 }
 
-Renderer::Renderer(Manager& manager, u32 nx, u32 ny) {
+/* Renderer::Renderer(Manager& manager, u32 nx, u32 ny) {
   p_mgr = &manager;
   render_queue_indices = get_graphics_present_queue_family_indices(
       manager.physicalDevice, manager.surface);
@@ -1364,4 +1361,4 @@ Renderer::~Renderer() {
   dev.destroyPipeline(graphicsPipeline);
   dev.destroyPipelineLayout(graphicsPipelineLayout);
   dev.destroyRenderPass(renderPass);
-}
+}*/

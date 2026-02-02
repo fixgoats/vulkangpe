@@ -2,12 +2,6 @@ cmake_minimum_required(VERSION 3.24)
 
 project(VulkanCompute)
 
-set(CMAKE_AUTOUIC ON)
-set(CMAKE_AUTOMOC ON)
-set(CMAKE_AUTORCC ON)
-set(CMAKE_C_STANDARD 99)
-
-
 set(PROJECT_SOURCES
         src/main.cpp
         src/vkcore.cpp
@@ -27,25 +21,47 @@ target_compile_options(${MAIN_TARGET} PRIVATE -Wall -Wextra -Wpedantic)
 add_definitions(-DVKFFT_BACKEND=${VKFFT_BACKEND})
 target_compile_definitions(VulkanCompute PUBLIC -DVK_API_VERSION=13)
 target_include_directories(${MAIN_TARGET} PRIVATE include)
-add_subdirectory(vk-bootstrap)
 
 find_package(Vulkan REQUIRED)
 find_package(glslang REQUIRED)
-find_package(SDL3 REQUIRED CONFIG)
-find_package(VulkanMemoryAllocator CONFIG REQUIRED)
-add_library(VkFFT INTERFACE)
-target_include_directories(VkFFT INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/vkFFT/ /usr/include/glslang/Include)
-target_link_libraries(VkFFT INTERFACE glslang::MachineIndependent glslang::OSDependent glslang::GenericCodeGen glslang::SPIRV)
-target_compile_definitions(VkFFT INTERFACE -DVKFFT_BACKEND=${VKFFT_BACKEND} -DVKFFT_MAX_FFT_DIMENSIONS=3)
+find_package(HDF5 REQUIRED COMPONENTS C HL)
+include(ExternalProject)
+set(EIGEN_INSTALL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/eigen-install/")
+ExternalProject_Add(
+  eigen
+  URL https://gitlab.com/libeigen/eigen/-/archive/5.0.1/eigen-5.0.1.tar.gz
+  SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/eigen-src"
+  BINARY_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/eigen-build"
+  INSTALL_DIR "${EIGEN_INSTALL_DIR}"
+  CMAKE_ARGS
+  -DCMAKE_INSTALL_PREFIX:PATH=<INSTALL_DIR>
+  -DCMAKE_BUILD_TYPE=Release
+)
+
+file(MAKE_DIRECTORY ${EIGEN_INSTALL_DIR}/include)
+add_library(eigenlib INTERFACE IMPORTED GLOBAL)
+add_dependencies(eigenlib eigen)
+target_compile_features(eigenlib INTERFACE cxx_std_23)
+set_target_properties(eigenlib PROPERTIES INTERFACE_INCLUDE_DIRECTORIES ${EIGEN_INSTALL_DIR}/include/eigen5)
+target_include_directories(${MAIN_TARGET} INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/external/vkFFT/)
+# find_package(glslang REQUIRED)
+# find_package(SDL3 REQUIRED CONFIG)
+# find_package(VulkanMemoryAllocator CONFIG REQUIRED)
+# add_library(VkFFT INTERFACE)
+# target_include_directories(VkFFT INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/vkFFT/ /usr/include/glslang/Include)
+# target_link_libraries(VkFFT INTERFACE glslang::MachineIndependent glslang::OSDependent glslang::GenericCodeGen glslang::SPIRV)
+# target_compile_definitions(VkFFT INTERFACE -DVKFFT_BACKEND=${VKFFT_BACKEND} -DVKFFT_MAX_FFT_DIMENSIONS=3)
 if(result AND CMAKE_BUILD_TYPE STREQUAL "Release")
-    message(STATUS "Using LTO")
-    set_property(TARGET ${MAIN_TARGET} PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
+  message(STATUS "Using LTO")
+  set_property(TARGET ${MAIN_TARGET} PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
+elseif(result)
+  message(STATUS "Build type is not Release, skipping LTO")
 else()
-    message(WARNING "LTO is not supported: ${output}")
+  message(WARNING "LTO is not supported: ${output}")
 endif()
 
 
-install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/vkFFT/" DESTINATION include)
-install(TARGETS ${PROJECT_NAME} DESTINATION bin)
+# install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/vkFFT/" DESTINATION include)
+# install(TARGETS ${PROJECT_NAME} DESTINATION bin)
 target_precompile_headers(${MAIN_TARGET} PRIVATE include/hack.hpp)
-target_link_libraries(${MAIN_TARGET} PRIVATE SPIRV glslang Vulkan::Vulkan GPUOpen::VulkanMemoryAllocator VkFFT SDL3::SDL3)
+target_link_libraries(${MAIN_TARGET} PRIVATE SPIRV Vulkan::Vulkan glslang::MachineIndependent glslang::OSDependent glslang::GenericCodeGen glslang::SPIRV hdf5::hdf5)

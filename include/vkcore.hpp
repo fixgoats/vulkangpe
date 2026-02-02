@@ -1,11 +1,10 @@
 #pragma once
-#include "SDL3/SDL.h"
-#include "betterexc.h"
-#include "hack.h"
-#include "mathhelpers.h"
-#include "metaprogramming.h"
-#include "typedefs.h"
-#include "vkFFT.h"
+#include "betterexc.hpp"
+#include "hack.hpp"
+#include "mathhelpers.hpp"
+#include "metaprogramming.hpp"
+#include "typedefs.hpp"
+// #include "vkFFT.h"
 #include "vk_mem_alloc.h"
 #include <boost/pfr/core.hpp>
 #include <chrono>
@@ -146,8 +145,7 @@ struct Algorithm {
   vk::PipelineLayout m_PipelineLayout;
   vk::Pipeline m_Pipeline;
   Algorithm() = default;
-  Algorithm(vk::Device device, const std::vector<vk::ImageView>& img_views,
-            const std::vector<MetaBuffer*>& buffers,
+  Algorithm(vk::Device device, u32 img_views, u32 buffers, u32 n_ubo,
             const std::vector<u32>& spirv, const u8* specConsts = nullptr,
             const size_t* sizes = nullptr, size_t nConsts = 0,
             const size_t* pushSizes = nullptr, size_t nPushConstants = 0);
@@ -161,7 +159,7 @@ struct Algorithm {
   ~Algorithm();
 };
 
-struct RaiiVkFFTApp {
+/*struct RaiiVkFFTApp {
   VkFFTApplication app;
   ~RaiiVkFFTApp() { deleteVkFFT(&app); }
 };
@@ -169,7 +167,7 @@ struct RaiiVkFFTApp {
 struct RaiiVkFFTConf {
   std::vector<u64> bufferSizes;
   VkFFTConfiguration conf;
-};
+};*/
 
 static const std::vector<std::string> deviceExtensions = {
     vk::KHRSwapchainExtensionName};
@@ -186,10 +184,10 @@ struct Manager {
   VmaAllocationInfo stagingInfo;
   u32 cQFI = UINT32_MAX;
   vk::CommandPool commandPool;
-  SDL_Window* window;
+  // SDL_Window* window;
   vk::SurfaceKHR surface;
 
-  Manager(size_t stagingSize, SDL_Window* window = nullptr);
+  Manager(size_t stagingSize /*,  SDL_Window* window = nullptr */);
   void finishSetup(size_t stagingSize, vk::SurfaceKHR& surface);
   // Manager uses a single staging buffer for efficient copies.
   void copyBuffer(vk::Buffer& srcBuffer, vk::Buffer& dstBuffer, u32 bufferSize,
@@ -271,18 +269,17 @@ struct Manager {
     writeToBuffer(buffer, v);
     return buffer;
   }
-  Algorithm makeAlgorithmRaw(
-      std::string spirvname, const std::vector<vk::ImageView>& images,
-      const std::vector<MetaBuffer*>& buffers, const u8* specConsts = nullptr,
-      const size_t* specConstOffsets = nullptr, size_t nConsts = 0,
-      const size_t* pushSizes = nullptr, size_t nPushConstants = 0);
+  Algorithm makeAlgorithmRaw(std::string spirvName, u32 nImgViews, u32 nBuffers,
+                             u32 nUBOs, const u8* specConsts = nullptr,
+                             const size_t* sizes = nullptr, size_t nConsts = 0,
+                             const size_t* pushSizes = nullptr,
+                             size_t nPushConstants = 0);
   template <class T>
-  Algorithm
-  makeAlgorithm(std::string spirvname, const std::vector<vk::ImageView>& images,
-                std::vector<MetaBuffer*> buffers, const T specConsts) {
+  Algorithm makeAlgorithm(std::string spirvname, u32 nImgViews, u32 nBuffers,
+                          const T specConsts) {
     constexpr auto sizes = struct_field_sizes<T>();
     constexpr auto n_fields = sizes.size();
-    return makeAlgorithmRaw(spirvname, images, buffers,
+    return makeAlgorithmRaw(spirvname, nImgViews, nBuffers, 0,
                             bit_cast<const u8*>(&specConsts), sizes.data(),
                             sizes.size());
   }
@@ -304,7 +301,7 @@ struct Manager {
                             bit_cast<const u8*>(&specConsts), sizes.data(),
                             sizes.size(), pushSizes.data(), pushSizes.size());
   }
-  RaiiVkFFTConf makeFFTConf(const MetaBuffer& buffer, std::array<u32, 3> dims,
+  /*RaiiVkFFTConf makeFFTConf(const MetaBuffer& buffer, std::array<u32, 3> dims,
                             u32 numberBatches = 1) {
     RaiiVkFFTConf ret{};
     ret.conf.device = ((VkDevice*)&device);
@@ -321,10 +318,11 @@ struct Manager {
     ret.bufferSizes = {buffer.aInfo.size};
     ret.conf.bufferSize = ret.bufferSizes.data();
     return ret;
-  }
+  }*/
   ~Manager();
 };
 
+/*
 struct Renderer {
   // non-owned
   Manager* p_mgr;
@@ -373,6 +371,7 @@ struct Renderer {
   void drawFrame();
   ~Renderer();
 };
+*/
 
 template <class T>
 void writeCsv(std::ofstream& of, T* v, u32 nColumns, u32 nRows = 1,
