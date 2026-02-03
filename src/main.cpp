@@ -61,8 +61,8 @@ struct Dispatch {
 //   return surf;
 // }
 
-constexpr u32 nX = 1024;
-constexpr u32 nY = 1024;
+constexpr u32 nX = 512;
+constexpr u32 nY = 512;
 constexpr u32 gX = 8;
 constexpr u32 gY = 8;
 constexpr struct SimConstants {
@@ -167,9 +167,9 @@ int main(int /*argc*/, char* /*argv*/[]) {
   std::vector<f32> cpu_pump(sc.nx * sc.ny, 0);
   for (const auto& point : points) {
     for (u32 j = 0; j < sc.ny; j++) {
-      f32 y = int_to_coord(j, sc.ny, xstart, xend) - 3 * point.y();
+      f32 y = int_to_coord(j, sc.ny, xstart, xend) - point.y();
       for (u32 i = 0; i < sc.nx; i++) {
-        f32 x = int_to_coord(i, sc.nx, xstart, xend) - 3 * point.x();
+        f32 x = int_to_coord(i, sc.nx, xstart, xend) - point.x();
         // std::cout << x << ' ';
         cpu_pump[j * sc.nx + i] += 16 * pumpProfile(x, y, 1.3);
       }
