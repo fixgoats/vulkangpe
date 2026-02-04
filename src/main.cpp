@@ -4,9 +4,11 @@
 #include <cstring>
 #include <cxxopts.hpp>
 #include <iostream>
+#include <toml++/toml.hpp>
 
 // #include "colormaps.hpp"
 #include "Eigen/Dense"
+#include "logger.hpp"
 #include "mathhelpers.hpp"
 #include "typedefs.hpp"
 #include "vkcore.hpp"
@@ -76,11 +78,10 @@ constexpr struct SimConstants {
   f32 G = 0.002;
   f32 R = 0.016;
   f32 eta = 2;
-  f32 dt = 0.01;
+  f32 dt = 0.02;
 
   bool validate() { return !((nx % gx) | (ny % gy)); }
   constexpr u32 X() const { return nx / gx; }
-
   constexpr u32 Y() const { return ny / gy; }
 } sc;
 
@@ -134,117 +135,233 @@ std::vector<Vector2d> readPoints(const std::string& fname) {
   return M;
 }
 
-int main(int /*argc*/, char* /*argv*/[]) {
+template <class T>
+struct RangeConf {
+  T start;
+  T end;
+  u64 n;
+
+  constexpr T d() const { return (end - start) / n; }
+  constexpr T ith(uint i) const { return start + i * d(); }
+};
+
+RangeConf<Vector2d> tblToVecRange(const toml::table& tbl) {
+  toml::array start = *tbl["start"].as_array();
+  toml::array end = *tbl["end"].as_array();
+  return {{start[0].value<f64>().value(), start[1].value<f64>().value()},
+          {end[0].value<f64>().value(), end[1].value<f64>().value()},
+          tbl["n"].value_or<u64>(0)};
+}
+
+template <class T>
+RangeConf<T> tblToRange(toml::table& tbl) {
+  return {tbl["start"].value_or<T>(0.0), tbl["end"].value_or<T>(0.0),
+          tbl["n"].value_or<u64>(0)};
+}
+
+struct SimConf {
+  std::string pointPath;
+  std::string output;
+  RangeConf<f32> xrange;
+  RangeConf<f32> yrange;
+  u32 substeps;
+  u32 steps;
+  f32 m;
+  SimConstants sc;
+};
+
+#define SET_STRUCT_FIELD(c, tbl, key)                                          \
+  if (tbl.contains(#key))                                                      \
+  c.key = *tbl[#key].value<decltype(c.key)>()
+
+std::optional<SimConf> tomlToSimConf(const std::string& tomlPath) {
+  logDebug("Function: tomlToSimConf.");
+  toml::table tbl;
+  try {
+    tbl = toml::parse_file(tomlPath);
+  } catch (const std::exception& err) {
+    std::cerr << "Parsing file " << tomlPath
+              << " failed with exception: " << err.what() << '\n';
+    return {};
+  }
+  SimConf conf{};
+
+  SET_STRUCT_FIELD(conf, tbl, substeps);
+  logDebug(std::format("substeps set to {}", conf.substeps));
+  SET_STRUCT_FIELD(conf, tbl, steps);
+  logDebug(std::format("steps set to {}", conf.steps));
+  SET_STRUCT_FIELD(conf, tbl, pointPath);
+  logDebug(std::format("pointPath set to {}", conf.pointPath));
+  SET_STRUCT_FIELD(conf, tbl, output);
+  logDebug(std::format("output set to {}", conf.output));
+  SET_STRUCT_FIELD(conf, tbl, m);
+  logDebug(std::format("m set to {}", conf.m));
+  SET_STRUCT_FIELD(conf.sc, tbl, dt);
+  logDebug(std::format("sc.dt set to {}", conf.sc.dt));
+  SET_STRUCT_FIELD(conf.sc, tbl, alpha);
+  logDebug(std::format("sc.alpha set to {}", conf.sc.alpha));
+  SET_STRUCT_FIELD(conf.sc, tbl, gammalp);
+  logDebug(std::format("sc.gammalp set to {}", conf.sc.gammalp));
+  SET_STRUCT_FIELD(conf.sc, tbl, Gamma);
+  logDebug(std::format("sc.Gamma set to {}", conf.sc.Gamma));
+  SET_STRUCT_FIELD(conf.sc, tbl, G);
+  logDebug(std::format("sc.G set to {}", conf.sc.G));
+  SET_STRUCT_FIELD(conf.sc, tbl, R);
+  logDebug(std::format("sc.R set to {}", conf.sc.R));
+  SET_STRUCT_FIELD(conf.sc, tbl, eta);
+  logDebug(std::format("sc.eta set to {}", conf.sc.eta));
+  SET_STRUCT_FIELD(conf.sc, tbl, gx);
+  logDebug(std::format("sc.gx set to {}", conf.sc.gx));
+  SET_STRUCT_FIELD(conf.sc, tbl, gy);
+  logDebug(std::format("sc.gy set to {}", conf.sc.gy));
+  conf.xrange = tblToRange<f32>(*tbl["xrange"].as_table());
+  conf.yrange = tblToRange<f32>(*tbl["yrange"].as_table());
+  conf.sc.nx = conf.xrange.n;
+  logDebug(std::format("Set sc.nx to {}", conf.sc.nx));
+  conf.sc.ny = conf.yrange.n;
+  logDebug(std::format("Set sc.ny to {}", conf.sc.ny));
+
+  logDebug("Exiting tomlToSimConf.");
+  return conf;
+}
+#undef SET_STRUCT_FIELD
+
+int main(int argc, char* argv[]) {
   // int ret_val = test_graphical();
-  Manager mgr(10 * 1024 * 1024);
-  std::vector<c32> cpu_psir(sc.nx * sc.ny);
-  std::random_device dev;
-  std::mt19937 gen(dev());
-  std::uniform_real_distribution<f32> dis(-1e-8, 1e-8);
-  for (auto& x : cpu_psir) {
-    x = c32{dis(gen), dis(gen)};
+  cxxopts::Options options("MyProgram", "bleh");
+  options.add_options()("c,conf", "Configuration file",
+                        cxxopts::value<std::string>());
+
+  cxxopts::ParseResult result;
+  try {
+    result = options.parse(argc, argv);
+  } catch (const std::exception& exc) {
+    std::cerr << "Exception: " << exc.what() << std::endl;
+    return EXIT_FAILURE;
   }
-  constexpr f32 xstart = -120.0;
-  constexpr f32 xend = 120.0;
-  constexpr f32 dx = (xend - xstart) / sc.nx;
-  constexpr f32 kmax = M_PI / dx;
-  std::vector<c32> cpu_kProp(sc.nx * sc.ny);
-  for (u32 j = 0; j < sc.ny; j++) {
-    f32 ky = int_to_coord(j, sc.ny, -kmax, kmax);
-    for (u32 i = 0; i < sc.nx; i++) {
-      f32 kx = int_to_coord(i, sc.nx, -kmax, kmax);
-      cpu_kProp[j * sc.nx + i] = std::exp(
-          c32{0.0, -0.5f * hbar * sc.dt * (square(kx) + square(ky)) / 0.32f});
+
+  if (result["c"].count()) {
+    std::string fname = result["c"].as<std::string>();
+    SimConf conf;
+    if (auto opt = tomlToSimConf(fname); opt.has_value()) {
+      conf = opt.value();
+    } else {
+      return EXIT_FAILURE;
     }
-  }
-  MetaBuffer psir = mgr.vecToBuffer(cpu_psir);
-  MetaBuffer oldPsir = mgr.makeRawBuffer<c32>(sc.nx * sc.ny);
-  MetaBuffer psik = mgr.makeRawBuffer<c32>(sc.nx * sc.ny);
-  MetaBuffer nR = mgr.makeRawBuffer<f32>(sc.nx * sc.ny);
-  mgr.defaultInitBuffer<f32>(nR, sc.nx * sc.ny);
-  MetaBuffer kTimeEvo = mgr.vecToBuffer(cpu_kProp);
-  auto points = readPoints("penroselvl4.txt");
-  std::vector<f32> cpu_pump(sc.nx * sc.ny, 0);
-  for (const auto& point : points) {
-    for (u32 j = 0; j < sc.ny; j++) {
-      f32 y = int_to_coord(j, sc.ny, xstart, xend) - point.y();
-      for (u32 i = 0; i < sc.nx; i++) {
-        f32 x = int_to_coord(i, sc.nx, xstart, xend) - point.x();
-        // std::cout << x << ' ';
-        cpu_pump[j * sc.nx + i] += 16 * pumpProfile(x, y, 1.3);
+    u32 totalCells = conf.sc.nx * conf.sc.ny;
+
+    logDebug(std::format("totalCells: {}", totalCells));
+    Manager mgr(10 * 1024 * 1024);
+    std::vector<c32> cpu_psir(totalCells);
+    std::random_device dev;
+    std::mt19937 gen(dev());
+    std::uniform_real_distribution<f32> dis(-1e-8, 1e-8);
+    for (auto& x : cpu_psir) {
+      x = c32{dis(gen), dis(gen)};
+    }
+    const f32 kmax = M_PI / conf.xrange.d();
+    const RangeConf<f32> kxrange{-kmax, kmax, conf.sc.nx};
+    const RangeConf<f32> kyrange{-kmax, kmax, conf.sc.ny};
+    std::vector<c32> cpu_kProp(totalCells);
+    for (u32 j = 0; j < conf.sc.ny; j++) {
+      f32 ky = kyrange.ith(j);
+      for (u32 i = 0; i < conf.sc.nx; i++) {
+        f32 kx = kxrange.ith(i);
+        cpu_kProp[j * conf.sc.nx + i] = std::exp(c32{
+            0.0, -0.5f * hbar * sc.dt * (square(kx) + square(ky)) / conf.m});
       }
     }
-  }
-  MetaBuffer pump = mgr.vecToBuffer(cpu_pump);
+    MetaBuffer psir = mgr.vecToBuffer(cpu_psir);
+    MetaBuffer oldPsir = mgr.makeRawBuffer<c32>(totalCells);
+    MetaBuffer psik = mgr.makeRawBuffer<c32>(totalCells);
+    MetaBuffer nR = mgr.makeRawBuffer<f32>(totalCells);
+    mgr.defaultInitBuffer<f32>(nR, totalCells);
+    MetaBuffer kTimeEvo = mgr.vecToBuffer(cpu_kProp);
+    auto points = readPoints(conf.pointPath);
+    std::vector<f32> cpu_pump(totalCells);
 
-  Algorithm rstep = mgr.makeAlgorithm("Shaders/rstep.spv", 0, 4, sc);
-  rstep.bindData({}, {&psir, &oldPsir, &nR, &pump}, {});
-  Algorithm kstep = mgr.makeAlgorithm("Shaders/kstep.spv", 0, 2, sc);
-  kstep.bindData({}, {&psik, &kTimeEvo}, {});
-  Algorithm finalstep = mgr.makeAlgorithm("Shaders/finalstep.spv", 0, 4, sc);
-  finalstep.bindData({}, {&psir, &oldPsir, &nR, &pump}, {});
-  VkFFTConfiguration conf{};
-  conf.device = pcast<VkDevice>(&mgr.device);
-  conf.FFTdim = 2;
-  conf.size[0] = sc.nx;
-  conf.size[1] = sc.ny;
-  conf.queue = pcast<VkQueue>(&mgr.queue);
-  conf.fence = pcast<VkFence>(&mgr.fence);
-  conf.commandPool = pcast<VkCommandPool>(&mgr.commandPool);
-  conf.physicalDevice = pcast<VkPhysicalDevice>(&mgr.physicalDevice);
-  conf.buffer = pcast<VkBuffer>(&psik.buffer);
-  conf.isInputFormatted = true;
-  conf.inputBuffer = pcast<VkBuffer>(&psir.buffer);
-  conf.bufferSize = &psik.aInfo.size;
-  conf.inputBufferSize = &psir.aInfo.size;
-  conf.inverseReturnToInputBuffer = true;
-  conf.normalize = true;
-  VkFFTApplication app{};
-  auto resFFT = initializeVkFFT(&app, conf);
-  if (resFFT != VKFFT_SUCCESS) {
-    std::cout << resFFT << '\n';
-    exit(1);
-  }
-  auto cb = mgr.beginRecord();
-  VkFFTLaunchParams launchParams{};
-  launchParams.commandBuffer = pcast<VkCommandBuffer>(&cb);
-  for (int i = 0; i < 100; i++) {
-    appendOp(cb, rstep, sc.X(), sc.Y(), 1);
-    resFFT = VkFFTAppend(&app, -1, &launchParams);
+    for (const auto& point : points) {
+      for (u32 j = 0; j < sc.ny; j++) {
+        f32 y = conf.yrange.ith(j) - point.y();
+        for (u32 i = 0; i < sc.nx; i++) {
+          f32 x = conf.xrange.ith(i) - point.x();
+          // std::cout << x << ' ';
+          cpu_pump[j * sc.nx + i] += 16 * pumpProfile(x, y, 1.3);
+        }
+      }
+    }
+    MetaBuffer pump = mgr.vecToBuffer(cpu_pump);
+
+    Algorithm rstep = mgr.makeAlgorithm("Shaders/rstep.spv", 0, 4, conf.sc);
+    rstep.bindData({}, {&psir, &oldPsir, &nR, &pump}, {});
+    Algorithm kstep = mgr.makeAlgorithm("Shaders/kstep.spv", 0, 2, conf.sc);
+    kstep.bindData({}, {&psik, &kTimeEvo}, {});
+    Algorithm finalstep =
+        mgr.makeAlgorithm("Shaders/finalstep.spv", 0, 4, conf.sc);
+    finalstep.bindData({}, {&psir, &oldPsir, &nR, &pump}, {});
+    VkFFTConfiguration vkfftconf{};
+    vkfftconf.device = pcast<VkDevice>(&mgr.device);
+    vkfftconf.FFTdim = 2;
+    vkfftconf.size[0] = sc.nx;
+    vkfftconf.size[1] = sc.ny;
+    vkfftconf.queue = pcast<VkQueue>(&mgr.queue);
+    vkfftconf.fence = pcast<VkFence>(&mgr.fence);
+    vkfftconf.commandPool = pcast<VkCommandPool>(&mgr.commandPool);
+    vkfftconf.physicalDevice = pcast<VkPhysicalDevice>(&mgr.physicalDevice);
+    vkfftconf.buffer = pcast<VkBuffer>(&psik.buffer);
+    vkfftconf.isInputFormatted = true;
+    vkfftconf.inputBuffer = pcast<VkBuffer>(&psir.buffer);
+    vkfftconf.bufferSize = &psik.aInfo.size;
+    vkfftconf.inputBufferSize = &psir.aInfo.size;
+    vkfftconf.inverseReturnToInputBuffer = true;
+    vkfftconf.normalize = true;
+    VkFFTApplication app{};
+    auto resFFT = initializeVkFFT(&app, vkfftconf);
     if (resFFT != VKFFT_SUCCESS) {
       std::cout << resFFT << '\n';
       exit(1);
     }
-    appendOp(cb, kstep, sc.X(), sc.Y(), 1);
-    resFFT = VkFFTAppend(&app, 1, &launchParams);
-    if (resFFT != VKFFT_SUCCESS) {
-      std::cout << resFFT << '\n';
-      exit(1);
+    auto cb = mgr.beginRecord();
+    VkFFTLaunchParams launchParams{};
+    launchParams.commandBuffer = pcast<VkCommandBuffer>(&cb);
+    for (u32 i = 0; i < conf.substeps; i++) {
+      appendOp(cb, rstep, conf.sc.X(), conf.sc.Y(), 1);
+      resFFT = VkFFTAppend(&app, -1, &launchParams);
+      if (resFFT != VKFFT_SUCCESS) {
+        std::cout << resFFT << '\n';
+        exit(1);
+      }
+      appendOp(cb, kstep, conf.sc.X(), conf.sc.Y(), 1);
+      resFFT = VkFFTAppend(&app, 1, &launchParams);
+      if (resFFT != VKFFT_SUCCESS) {
+        std::cout << resFFT << '\n';
+        exit(1);
+      }
+      appendOp(cb, finalstep, conf.sc.X(), conf.sc.Y(), 1);
     }
-    appendOp(cb, finalstep, sc.X(), sc.Y(), 1);
-  }
-  cb.end();
-  for (u32 i = 0; i < 1000; ++i) {
-    mgr.execute(cb);
-  }
-  hid_t file =
-      H5Fcreate("psipenrose4.h5", H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
-  hsize_t sizes[2] = {nY, nX};
-  hid_t space = H5Screate_simple(2, sizes, nullptr);
-  hid_t c_float = H5Tcreate(H5T_COMPOUND, sizeof(c32));
-  H5Tinsert(c_float, "r", 0, H5T_NATIVE_FLOAT_g);
-  H5Tinsert(c_float, "i", 4, H5T_NATIVE_FLOAT_g);
-  hid_t set = H5Dcreate2(file, "psir", c_float, space, H5P_DEFAULT, H5P_DEFAULT,
-                         H5P_DEFAULT);
+    cb.end();
+    for (u32 i = 0; i < conf.steps; ++i) {
+      mgr.execute(cb);
+    }
+    hid_t file =
+        H5Fcreate(conf.output.c_str(), H5F_ACC_TRUNC, H5P_DEFAULT, H5P_DEFAULT);
+    hsize_t sizes[2] = {conf.sc.nx, conf.sc.ny};
+    hid_t space = H5Screate_simple(2, sizes, nullptr);
+    hid_t c_float = H5Tcreate(H5T_COMPOUND, sizeof(c32));
+    H5Tinsert(c_float, "r", 0, H5T_NATIVE_FLOAT_g);
+    H5Tinsert(c_float, "i", 4, H5T_NATIVE_FLOAT_g);
+    hid_t set = H5Dcreate2(file, "psir", c_float, space, H5P_DEFAULT,
+                           H5P_DEFAULT, H5P_DEFAULT);
 
-  mgr.writeFromBuffer(psir, cpu_psir);
-  hid_t res =
-      H5Dwrite(set, c_float, H5S_ALL, space, H5P_DEFAULT, cpu_psir.data());
-  if (res < 0) {
-    std::cout << "Failed to write HDF5\n";
+    mgr.writeFromBuffer(psir, cpu_psir);
+    hid_t res =
+        H5Dwrite(set, c_float, H5S_ALL, space, H5P_DEFAULT, cpu_psir.data());
+    if (res < 0) {
+      std::cout << "Failed to write HDF5\n";
+    }
+    H5Fclose(file);
+    deleteVkFFT(&app);
   }
-  H5Fclose(file);
-  deleteVkFFT(&app);
   return 0;
 }
 

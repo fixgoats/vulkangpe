@@ -16,7 +16,17 @@ set(VKFFT_BACKEND 0 CACHE STRING "0 - Vulkan, 1 - CUDA, 2 - HIP, 3 - OpenCL, 4 -
 include(CheckIPOSupported)
 check_ipo_supported(RESULT result OUTPUT output)
 set(CMAKE_CXX_FLAGS_DEBUG "-g")
-target_compile_options(${MAIN_TARGET} PRIVATE -Wall -Wextra -Wpedantic)
+add_compile_options(
+       -Wall -Wextra -Wpedantic -Wno-error=maybe-uninitialized -Werror=return-type
+       $<$<CONFIG:RELEASE>:-Ofast -march=native>
+       $<$<CONFIG:DEBUG>:-O0>
+       $<$<CONFIG:DEBUG>:-ggdb3 -fsanitize=address>
+)
+add_compile_definitions(
+        $<$<CONFIG:RELEASE>:NDEBUG>
+        $<$<CONFIG:RELEASE>:BOOST_DISABLE_ASSERTS>
+)
+
 
 add_definitions(-DVKFFT_BACKEND=${VKFFT_BACKEND})
 target_compile_definitions(VulkanCompute PUBLIC -DVK_API_VERSION=13)

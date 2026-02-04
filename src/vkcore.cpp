@@ -6,6 +6,7 @@
 #include <vulkan/vulkan_handles.hpp>
 #define VMA_IMPLEMENTATION 1003000
 // #include "colormaps.hpp"
+#include "logger.hpp"
 #include "vkcore.hpp"
 #include <cstdint>
 #include <iostream>
@@ -190,6 +191,8 @@ void MetaBuffer::allocate(VmaAllocator& allocator,
                           VmaAllocationCreateInfo& allocCreateInfo,
                           vk::BufferCreateInfo& BCI) {
   p_allocator = &allocator;
+  logDebug("MetaBuffer::allocate");
+  logDebug(std::format("Trying to allocate {} bytes.", BCI.size));
   vmaCreateBuffer(allocator, pcast<VkBufferCreateInfo>(&BCI), &allocCreateInfo,
                   pcast<VkBuffer>(&buffer), &allocation, &aInfo);
 }
@@ -219,6 +222,9 @@ void AllocatedImage::allocate(VmaAllocator& allocator,
                               VmaAllocationCreateInfo& allocCreateInfo,
                               vk::ImageCreateInfo& BCI) {
   p_allocator = &allocator;
+  logDebug("AllocatedImage::allocate");
+  logDebug(std::format("Trying to allocate {}x{}x{} image.", BCI.extent.width,
+                       BCI.extent.height, BCI.extent.depth));
   vmaCreateImage(allocator, reinterpret_cast<VkImageCreateInfo*>(&BCI),
                  &allocCreateInfo, reinterpret_cast<VkImage*>(&img),
                  &allocation, &aInfo);
@@ -345,6 +351,7 @@ std::set<std::string> get_supported_extensions() {
 static const std::string appName{"Vulkan GPE Simulator"};
 static const std::string engineName{"argablarg"};
 Manager::Manager(size_t stagingSize /*,  SDL_Window* _window */) {
+  logDebug("Constructor: Manager::Manager(stagingSize)");
   // if (_window) {
   //   window = _window;
   // }
@@ -352,7 +359,7 @@ Manager::Manager(size_t stagingSize /*,  SDL_Window* _window */) {
                               VK_API_VERSION_1_3};
   // Validation layers are extremely helpful, we'll only turn them off if we
   // want absolute maximum performance.
-#ifdef NO_LAYERS
+#ifdef NDEBUG
   const std::vector<const char*> layers;
 #else
   const std::vector<const char*> layers = {"VK_LAYER_KHRONOS_validation"};
@@ -367,7 +374,7 @@ Manager::Manager(size_t stagingSize /*,  SDL_Window* _window */) {
     return (char const* const*)nullptr;
   }();*/
   // const std::vector<const char*> instanceExtensions = ;
-  const std::vector<const char*> deviceExtensions{};
+  const std::vector<const char*> deviceExtensions{"VK_KHR_maintenance4"};
   /* const std::vector<const char*> deviceExtensions = [&]() {
     if (window) {
       return std::vector<const char*>{vk::KHRSwapchainExtensionName};
@@ -447,17 +454,21 @@ Manager::Manager(size_t stagingSize /*,  SDL_Window* _window */) {
   vmaCreateBuffer(allocator, bit_cast<VkBufferCreateInfo*>(&stagingBCI),
                   &allocCreateInfo, bit_cast<VkBuffer*>(&staging),
                   &stagingAllocation, &stagingInfo);
+  logDebug("Exiting Manager constructor");
 }
 
 void copyBufferNow(vk::Device device, vk::CommandPool commandPool,
                    vk::Queue queue, vk::Fence fence, vk::Buffer& srcBuffer,
                    vk::Buffer& dstBuffer, u32 bufferSize, u32 src_offset,
                    u32 dst_offset) {
+  logDebug("Function: copyBufferNow");
   auto commandBuffer =
       device
           .allocateCommandBuffers(
               {commandPool, vk::CommandBufferLevel::ePrimary, 1})
           .front();
+  logDebug(
+      std::format("Allocated command buffer {}.", (const void*)commandBuffer));
   vk::CommandBufferBeginInfo cBBI(
       vk::CommandBufferUsageFlagBits::eOneTimeSubmit);
   commandBuffer.begin(cBBI);
@@ -465,15 +476,19 @@ void copyBufferNow(vk::Device device, vk::CommandPool commandPool,
                            vk::BufferCopy(src_offset, dst_offset, bufferSize));
   commandBuffer.end();
   vk::SubmitInfo submitInfo(nullptr, nullptr, commandBuffer);
+  logDebug(std::format("Copying buffer {} to {}.", (const void*)srcBuffer,
+                       (const void*)dstBuffer));
   queue.submit(submitInfo, fence);
   auto result = device.waitForFences(fence, true, -1);
   result = device.resetFences(1, &fence);
   device.freeCommandBuffers(commandPool, commandBuffer);
+  logDebug("Exiting copyBufferNow");
 }
 
 vk::CommandBuffer Manager::copyOp(vk::Buffer srcBuffer, vk::Buffer dstBuffer,
                                   u32 bufferSize, u32 src_offset,
                                   u32 dst_offset) {
+  logDebug("Method: Manager::copyOp.");
   auto commandBuffer =
       device
           .allocateCommandBuffers(
@@ -484,24 +499,30 @@ vk::CommandBuffer Manager::copyOp(vk::Buffer srcBuffer, vk::Buffer dstBuffer,
   commandBuffer.copyBuffer(srcBuffer, dstBuffer,
                            vk::BufferCopy(src_offset, dst_offset, bufferSize));
   commandBuffer.end();
+  logDebug("Exiting Manager::copyOp.");
   return commandBuffer;
 }
 
 void Manager::copyBuffer(vk::Buffer& srcBuffer, vk::Buffer& dstBuffer,
                          u32 bufferSize, u32 src_offset, u32 dst_offset) {
+  logDebug("Method: Manager::copyBuffer.");
   copyBufferNow(device, commandPool, queue, fence, srcBuffer, dstBuffer,
                 bufferSize, src_offset, dst_offset);
+  logDebug("Exiting Manager::copyBuffer.");
 }
 
 vk::CommandBuffer Manager::beginRecord(vk::CommandBufferUsageFlagBits bits) {
+  logDebug("Method: Manager::beginRecord");
   auto commandBuffer =
       device
           .allocateCommandBuffers(
               {commandPool, vk::CommandBufferLevel::ePrimary, 1})
           .front();
+  logDebug(
+      std::format("Allocated command buffer {}.", (const void*)commandBuffer));
   vk::CommandBufferBeginInfo cBBI(bits);
   commandBuffer.begin(cBBI);
-
+  logDebug("Exiting Manager::beginRecord");
   return commandBuffer;
 }
 
@@ -509,7 +530,9 @@ void Manager::writeToBuffer(MetaBuffer& dest, const void* source, size_t size,
                             size_t src_offset, size_t dst_offset) {
   // Catch if we're trying to write more data than the staging buffer can
   // store.
+  logDebug("Method: Manager::writeToBuffer.");
   if (size > stagingInfo.size) {
+    logDebug("Allocating new staging buffer.");
     vmaDestroyBuffer(allocator, staging, stagingAllocation);
     vk::BufferCreateInfo stagingBCI({}, round_up_x16(size),
                                     vk::BufferUsageFlagBits::eTransferSrc |
@@ -524,15 +547,20 @@ void Manager::writeToBuffer(MetaBuffer& dest, const void* source, size_t size,
     vmaCreateBuffer(allocator, bit_cast<VkBufferCreateInfo*>(&stagingBCI),
                     &allocCreateInfo, bit_cast<VkBuffer*>(&staging),
                     &stagingAllocation, &stagingInfo);
+    logDebug(
+        std::format("Created new staging buffer {}", (const void*)staging));
   }
 
   memcpy(stagingInfo.pMappedData, source, size);
+  logDebug(std::format("Writing to vk::Buffer {}.", (const void*)dest.buffer));
   copyBuffer(staging, dest.buffer, size, src_offset, dst_offset);
+  logDebug("Exiting Manager::writeToBuffer");
 }
 
 void Manager::writeFromBuffer(MetaBuffer& source, void* dest, size_t size) {
   // Catch if we're trying to write more data than the staging buffer can
   // store.
+  logDebug("Method: Manager::writeFromBuffer");
   if (size > stagingInfo.size) {
     vmaDestroyBuffer(allocator, staging, stagingAllocation);
     vk::BufferCreateInfo stagingBCI({}, round_up_x16(size),
@@ -552,18 +580,23 @@ void Manager::writeFromBuffer(MetaBuffer& source, void* dest, size_t size) {
 
   copyBuffer(source.buffer, staging, size);
   memcpy(dest, stagingInfo.pMappedData, size);
+  logDebug("Exiting Manager::writeFromBuffer");
 }
 
 void Manager::execute(vk::CommandBuffer& b) {
+  logDebug("Method: Manager::execute");
   vk::SubmitInfo submitInfo(0, nullptr, nullptr, 1, &b);
   queue.submit(submitInfo, fence);
   auto result = device.waitForFences(fence, vk::True, -1);
   result = device.resetFences(1, &fence);
+  logDebug("Exiting Manager::execute");
 }
 
 void Manager::executeNoSync(vk::CommandBuffer& b) {
+  logDebug("Method: Manager::executeNoSync");
   vk::SubmitInfo submitInfo(0, nullptr, nullptr, 1, &b);
   queue.submit(submitInfo);
+  logDebug("Exiting Manager::executeNoSync");
 }
 
 void Manager::queueWaitIdle() { queue.waitIdle(); }
@@ -573,20 +606,26 @@ Algorithm Manager::makeAlgorithmRaw(std::string spirvName, u32 nImgViews,
                                     const u8* specConsts, const size_t* sizes,
                                     size_t nConsts, const size_t* pushSizes,
                                     size_t nPushConstants) {
+  logDebug("Method:: Manager::makeAlgorithmRaw");
   const auto spirv = readFile<u32>(spirvName);
-  return Algorithm(device, nImgViews, nBuffers, nUBOs, spirv, specConsts, sizes,
+  Algorithm retalg(device, nImgViews, nBuffers, nUBOs, spirv, specConsts, sizes,
                    nConsts, pushSizes, nPushConstants);
+  logDebug("Exiting Manager::makeAlgorithmRaw");
+  return retalg;
 }
 
 void appendOpNoBarrier(vk::CommandBuffer& b, Algorithm& a, u32 X, u32 Y,
                        u32 Z) {
+  logDebug("Function: appendOpNoBarrier");
   b.bindPipeline(vk::PipelineBindPoint::eCompute, a.m_Pipeline);
   b.bindDescriptorSets(vk::PipelineBindPoint::eCompute, a.m_PipelineLayout, 0,
                        a.m_DescriptorSet, nullptr);
   b.dispatch(X, Y, Z);
+  logDebug("Exiting appendOpNoBarrier");
 }
 
 void appendOp(vk::CommandBuffer& b, Algorithm& a, u32 X, u32 Y, u32 Z) {
+  logDebug("Function: appendOp");
   b.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
                     vk::PipelineStageFlagBits::eAllCommands, {},
                     fullMemoryBarrier, nullptr, nullptr);
@@ -594,9 +633,11 @@ void appendOp(vk::CommandBuffer& b, Algorithm& a, u32 X, u32 Y, u32 Z) {
   b.bindDescriptorSets(vk::PipelineBindPoint::eCompute, a.m_PipelineLayout, 0,
                        a.m_DescriptorSet, nullptr);
   b.dispatch(X, Y, Z);
+  logDebug("Exiting appendOp");
 }
 
 Manager::~Manager() {
+  logDebug("Destructor: Manager.");
   device.waitIdle();
   device.destroyFence(fence);
   /*if (window != nullptr) {
@@ -607,6 +648,7 @@ Manager::~Manager() {
   device.destroyCommandPool(commandPool);
   device.destroy();
   instance.destroy();
+  logDebug("Exiting Manager destructor.");
 }
 
 vk::SwapchainKHR create_swapchain(vk::Device device, vk::SurfaceKHR surface,
@@ -671,6 +713,7 @@ void Algorithm::initialize(vk::Device device, u32 n_imgs, u32 n_buffers,
                            const u8* specConsts, const size_t* sizes,
                            size_t nConsts, const size_t* pushSizes,
                            size_t nPushConstants) {
+  logDebug("Method: Algorithm::initialize.");
   m_device = device;
   vk::ShaderModuleCreateInfo shaderMCI(vk::ShaderModuleCreateFlags(), spirv);
   m_ShaderModule = device.createShaderModule(shaderMCI);
@@ -752,11 +795,13 @@ void Algorithm::initialize(vk::Device device, u32 n_imgs, u32 n_buffers,
   vk::DescriptorSetAllocateInfo dSAI(m_DescriptorPool, 1, &m_DSL);
   auto descriptorSets = device.allocateDescriptorSets(dSAI);
   m_DescriptorSet = descriptorSets[0];
+  logDebug("Exiting Algorithm::initialize");
 }
 
 void Algorithm::bindData(const std::vector<vk::ImageView>& img_views,
                          const std::vector<MetaBuffer*>& buffers,
                          const std::vector<MetaBuffer*>& ubos) {
+  logDebug("Method:: Algorithm::bindData.");
   std::vector<vk::DescriptorImageInfo> dIIs(img_views.size());
   std::vector<vk::DescriptorBufferInfo> dBIs(buffers.size());
   std::vector<vk::DescriptorBufferInfo> dUBIs(ubos.size());
@@ -799,6 +844,7 @@ void Algorithm::bindData(const std::vector<vk::ImageView>& img_views,
     }
   }
   m_device.updateDescriptorSets(writeDescriptorSets, {});
+  logDebug("Exiting Algorithm::bindData.");
 }
 
 /* Renderer::Renderer(Manager& manager, u32 nx, u32 ny) {

@@ -1,6 +1,7 @@
 #pragma once
 #include "betterexc.hpp"
 #include "hack.hpp"
+#include "logger.hpp"
 #include "mathhelpers.hpp"
 #include "metaprogramming.hpp"
 #include "typedefs.hpp"
@@ -232,11 +233,18 @@ struct Manager {
                              vk::SharingMode::eExclusive,
                              1,
                              &cQFI};
+    logDebug("Manager::makeRawBuffer");
+    logDebug(std::format("Making buffer of {} elements.", nElements));
+    logDebug(std::format("Size allocated is {} bytes.", bCI.size));
     VmaAllocationCreateInfo allocCreateInfo{};
     allocCreateInfo.usage = VMA_MEMORY_USAGE_AUTO;
     allocCreateInfo.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
     allocCreateInfo.priority = 1.0f;
-    return MetaBuffer{allocator, allocCreateInfo, bCI};
+    MetaBuffer retbuf{allocator, allocCreateInfo, bCI};
+    logDebug(std::format("Resultant buffer address is {}.",
+                         (const void*)retbuf.buffer));
+    logDebug(std::format("{} bytes were allocated.", retbuf.aInfo.size));
+    return retbuf;
   }
   template <typename T>
   MetaBuffer makeUniformObject(T obj) {
@@ -265,8 +273,10 @@ struct Manager {
 
   template <typename T>
   MetaBuffer vecToBuffer(const std::vector<T>& v) {
+    logDebug("Method: Manager::vecToBuffer.");
     auto buffer = makeRawBuffer<T>(v.size());
     writeToBuffer(buffer, v);
+    logDebug("Exiting Manager::vecToBuffer.");
     return buffer;
   }
   Algorithm makeAlgorithmRaw(std::string spirvName, u32 nImgViews, u32 nBuffers,
